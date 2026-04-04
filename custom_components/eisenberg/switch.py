@@ -1,0 +1,73 @@
+"""Switch platform for Eisenberg — siren control."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from eisenberg import DeviceInfo
+
+from .coordinator import EisenbergCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Set up Eisenberg switches."""
+    coordinator: EisenbergCoordinator = entry.runtime_data
+    async_add_entities(
+        SirenSwitch(coordinator, device) for device in coordinator.devices
+    )
+
+
+class SirenSwitch(
+    CoordinatorEntity[EisenbergCoordinator], SwitchEntity
+):
+    """Siren on/off switch."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Siren"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_icon = "mdi:alarm-light"
+
+    def __init__(
+        self,
+        coordinator: EisenbergCoordinator,
+        device: DeviceInfo,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_siren"
+        self._attr_device_info = {
+            "identifiers": {("eisenberg", device.device_id)},
+        }
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if siren is on."""
+        state = self.coordinator.siren_states.get(self._device.device_id)
+        if state:
+            return state.is_on
+        return False
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn siren on."""
+        await self.coordinator.client.set_siren(
+            self._device.device_id, on=True
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn siren off."""
+        await self.coordinator.client.set_siren(
+            self._device.device_id, on=False
+        )
