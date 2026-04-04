@@ -1,0 +1,43 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Arlo Account",
+        "description": "Enter your Arlo account credentials.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "push_approval": {
+        "title": "Push Approval",
+        "description": "A push notification has been sent to your phone. Approve it in the Arlo app, then click Submit."
+      },
+      "media_storage": {
+        "title": "Media Storage",
+        "description": "Choose where to save motion clips and snapshots. Select 'Disabled' for no archival.",
+        "data": {
+          "media_dir": "Storage Location"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "push_timeout": "Push approval timed out. Try again.",
+      "cannot_connect": "Cannot connect to Arlo servers."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "media_dir": "Storage Location",
+          "detection_timeout": "Detection sensor reset timeout (seconds)"
+        }
+      }
+    }
+  }
+}
