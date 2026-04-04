@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+session.json
+cookies.json
+*.jpg
+*.mp4

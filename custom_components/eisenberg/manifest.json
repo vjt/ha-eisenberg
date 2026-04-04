@@ -1,0 +1,12 @@
+{
+  "domain": "eisenberg",
+  "name": "Eisenberg",
+  "codeowners": ["@vjt"],
+  "config_flow": true,
+  "dependencies": ["media_source"],
+  "documentation": "https://github.com/vjt/ha-eisenberg",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/vjt/ha-eisenberg/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

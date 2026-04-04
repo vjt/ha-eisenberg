@@ -1,0 +1,80 @@
+[project]
+name = "pyeisenberg"
+version = "0.1.0"
+description = "Async Python client for the Arlo camera API"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    {name = "Marcello Barnaba", email = "vjt@openssl.it"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Typing :: Typed",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/vjt/ha-eisenberg"
+Repository = "https://github.com/vjt/ha-eisenberg"
+Issues = "https://github.com/vjt/ha-eisenberg/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.2",
+    "aioresponses>=0.7",
+    "homeassistant>=2026.2",
+    "pyright>=1.1",
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["eisenberg*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+timeout = 5
+testpaths = ["tests"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+include = ["eisenberg/", "custom_components/eisenberg/"]
+reportMissingTypeStubs = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 99
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "A",         # builtins
+    "T20",       # print
+    "SIM",       # simplify
+    "TCH",       # type-checking
+    "RUF",       # ruff-specific
+]
+
+[tool.ruff.lint.per-file-ignores]
+"custom_components/**/*.py" = ["TCH001", "TCH002"]
