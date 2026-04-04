@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -39,22 +38,14 @@ async def async_setup_entry(
     entities: list[BinarySensorEntity] = []
     for device in coordinator.devices:
         entities.append(MotionSensor(coordinator, device))
-        entities.append(
-            DetectionSensor(coordinator, device, "Person", entry)
-        )
-        entities.append(
-            DetectionSensor(coordinator, device, "Vehicle", entry)
-        )
-        entities.append(
-            DetectionSensor(coordinator, device, "Animal", entry)
-        )
+        entities.append(DetectionSensor(coordinator, device, "Person", entry))
+        entities.append(DetectionSensor(coordinator, device, "Vehicle", entry))
+        entities.append(DetectionSensor(coordinator, device, "Animal", entry))
 
     async_add_entities(entities)
 
 
-class MotionSensor(
-    CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity
-):
+class MotionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
     """Motion detected binary sensor — directly from MQTT motionDetected."""
 
     _attr_has_entity_name = True
@@ -82,9 +73,7 @@ class MotionSensor(
         return state.motion_detected
 
 
-class DetectionSensor(
-    CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity
-):
+class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
     """AI detection binary sensor (person/vehicle/animal).
 
     Turns on when the AI classification matches, auto-resets after
@@ -137,9 +126,7 @@ class DetectionSensor(
         if self._reset_task:
             self._reset_task.cancel()
 
-        timeout = self._entry.options.get(
-            CONF_DETECTION_TIMEOUT, DEFAULT_DETECTION_TIMEOUT
-        )
+        timeout = self._entry.options.get(CONF_DETECTION_TIMEOUT, DEFAULT_DETECTION_TIMEOUT)
 
         async def _reset() -> None:
             await asyncio.sleep(timeout)

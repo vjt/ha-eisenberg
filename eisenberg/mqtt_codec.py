@@ -76,11 +76,7 @@ def build_connect(
     )
 
     remaining = var_header + payload
-    return (
-        bytes([0x10])
-        + _encode_remaining_length(len(remaining))
-        + remaining
-    )
+    return bytes([0x10]) + _encode_remaining_length(len(remaining)) + remaining
 
 
 def build_subscribe(packet_id: int, topics: list[str]) -> bytes:
@@ -89,11 +85,7 @@ def build_subscribe(packet_id: int, topics: list[str]) -> bytes:
     for topic in topics:
         payload += _encode_utf8_string(topic) + b"\x00"  # QoS 0
 
-    return (
-        bytes([0x82])
-        + _encode_remaining_length(len(payload))
-        + payload
-    )
+    return bytes([0x82]) + _encode_remaining_length(len(payload)) + payload
 
 
 def build_pingreq() -> bytes:

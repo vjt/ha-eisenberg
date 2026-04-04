@@ -17,7 +17,7 @@ class AuthenticationError(EisenbergError):
     """Authentication failed (wrong credentials, expired token, etc.)."""
 
 
-class PushApprovalRequired(AuthenticationError):
+class PushApprovalRequired(AuthenticationError):  # noqa: N818
     """2FA push approval needed. Carries factor info for the UI to display."""
 
     def __init__(

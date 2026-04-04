@@ -191,7 +191,7 @@ class MQTTEventStream:
         while self._running and self._ws and not self._ws.closed:
             try:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=90)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOGGER.warning("MQTT receive timeout")
                 break
             except asyncio.CancelledError:

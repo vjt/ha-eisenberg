@@ -25,14 +25,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up Eisenberg switches."""
     coordinator: EisenbergCoordinator = entry.runtime_data
-    async_add_entities(
-        SirenSwitch(coordinator, device) for device in coordinator.devices
-    )
+    async_add_entities(SirenSwitch(coordinator, device) for device in coordinator.devices)
 
 
-class SirenSwitch(
-    CoordinatorEntity[EisenbergCoordinator], SwitchEntity
-):
+class SirenSwitch(CoordinatorEntity[EisenbergCoordinator], SwitchEntity):
     """Siren on/off switch."""
 
     _attr_has_entity_name = True
@@ -62,12 +58,8 @@ class SirenSwitch(
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn siren on."""
-        await self.coordinator.client.set_siren(
-            self._device.device_id, on=True
-        )
+        await self.coordinator.client.set_siren(self._device.device_id, on=True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn siren off."""
-        await self.coordinator.client.set_siren(
-            self._device.device_id, on=False
-        )
+        await self.coordinator.client.set_siren(self._device.device_id, on=False)

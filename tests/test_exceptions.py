@@ -1,12 +1,12 @@
 """Tests for eisenberg exceptions hierarchy."""
 
 from eisenberg.exceptions import (
-    EisenbergError,
+    APIError,
     AuthenticationError,
+    EisenbergError,
+    MQTTConnectionError,
     PushApprovalRequired,
     SessionExpiredError,
-    APIError,
-    MQTTConnectionError,
 )
 
 

@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from eisenberg.exceptions import AuthenticationError, PushApprovalRequired
-
 
 # These tests validate the config flow logic in isolation.
 # Full HA integration tests require a running HA instance.
@@ -44,8 +43,6 @@ class TestConfigFlowLogic:
     async def test_bad_credentials_raises_auth_error(self) -> None:
         """When credentials are wrong, raises AuthenticationError."""
         client = AsyncMock()
-        client.login = AsyncMock(
-            side_effect=AuthenticationError("Invalid credentials")
-        )
+        client.login = AsyncMock(side_effect=AuthenticationError("Invalid credentials"))
         with pytest.raises(AuthenticationError):
             await client.login()

@@ -48,9 +48,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         self._password: str = ""
         self._factor_auth_code: str = ""
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: Email and password."""
         errors: dict[str, str] = {}
 
@@ -83,10 +81,12 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({
-                vol.Required(CONF_USERNAME): str,
-                vol.Required(CONF_PASSWORD): str,
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
             errors=errors,
         )
 
@@ -131,9 +131,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_DEVICE_ID: self._device_id,
                 },
                 options={
-                    CONF_MEDIA_DIR: media_dir
-                    if media_dir != MEDIA_DIR_DISABLED
-                    else "",
+                    CONF_MEDIA_DIR: media_dir if media_dir != MEDIA_DIR_DISABLED else "",
                     CONF_DETECTION_TIMEOUT: DEFAULT_DETECTION_TIMEOUT,
                 },
             )
@@ -146,18 +144,16 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="media_storage",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_MEDIA_DIR, default=MEDIA_DIR_DISABLED
-                ): vol.In(options),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_MEDIA_DIR, default=MEDIA_DIR_DISABLED): vol.In(options),
+                }
+            ),
         )
 
     # --- Reauth ---
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, str]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, str]) -> ConfigFlowResult:
         """Handle reauth triggered by ConfigEntryAuthFailed."""
         self._username = entry_data[CONF_USERNAME]
         return await self.async_step_reauth_confirm()
@@ -172,9 +168,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._username = user_input[CONF_USERNAME]
             self._password = user_input[CONF_PASSWORD]
-            self._device_id = entry.data.get(
-                CONF_DEVICE_ID, f"eisenberg-{uuid.uuid4()}"
-            )
+            self._device_id = entry.data.get(CONF_DEVICE_ID, f"eisenberg-{uuid.uuid4()}")
 
             self._client = EisenbergClient(
                 email=self._username,
@@ -203,10 +197,12 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema({
-                vol.Required(CONF_USERNAME, default=self._username): str,
-                vol.Required(CONF_PASSWORD): str,
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME, default=self._username): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
             errors=errors,
         )
 
@@ -252,9 +248,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 class EisenbergOptionsFlow(OptionsFlow):
     """Options flow for Eisenberg."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage options."""
         if user_input is not None:
             return self.async_create_entry(data=user_input)
@@ -267,16 +261,16 @@ class EisenbergOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_MEDIA_DIR,
-                    default=opts.get(CONF_MEDIA_DIR, ""),
-                ): vol.In(options),
-                vol.Required(
-                    CONF_DETECTION_TIMEOUT,
-                    default=opts.get(
-                        CONF_DETECTION_TIMEOUT, DEFAULT_DETECTION_TIMEOUT
-                    ),
-                ): vol.All(int, vol.Range(min=5, max=300)),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_MEDIA_DIR,
+                        default=opts.get(CONF_MEDIA_DIR, ""),
+                    ): vol.In(options),
+                    vol.Required(
+                        CONF_DETECTION_TIMEOUT,
+                        default=opts.get(CONF_DETECTION_TIMEOUT, DEFAULT_DETECTION_TIMEOUT),
+                    ): vol.All(int, vol.Range(min=5, max=300)),
+                }
+            ),
         )

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import AsyncMock
+from typing import TYPE_CHECKING
 
 import pytest
-from aiohttp import CookieJar
 from aioresponses import aioresponses
+
+if TYPE_CHECKING:
+    from aiohttp import CookieJar
 
 from eisenberg.client import EisenbergClient
 from eisenberg.exceptions import AuthenticationError, PushApprovalRequired
-
 
 OCAPI = "https://ocapi-app.arlo.com"
 MYAPI = "https://myapi.arlo.com"
@@ -31,32 +32,44 @@ class TestTrustedBrowserFlow:
     def mocked(self) -> aioresponses:
         with aioresponses() as m:
             # Step 1: auth
-            m.post(f"{OCAPI}/api/auth", payload={
-                "data": {
-                    "token": "initial-token",
-                    "userId": "USER-123",
-                    "authCompleted": False,
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                    },
+                    "meta": {"code": 200},
                 },
-                "meta": {"code": 200},
-            })
+            )
             # Step 2: getFactorId succeeds (browser trusted)
-            m.post(f"{OCAPI}/api/getFactorId", payload={
-                "data": {"factorId": "factor-abc"},
-                "meta": {"code": 200},
-            })
-            # Step 3: startAuth completes instantly
-            m.post(f"{OCAPI}/api/startAuth", payload={
-                "data": {
-                    "authCompleted": True,
-                    "accessToken": {"token": "final-token"},
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={
+                    "data": {"factorId": "factor-abc"},
+                    "meta": {"code": 200},
                 },
-                "meta": {"code": 200},
-            })
+            )
+            # Step 3: startAuth completes instantly
+            m.post(
+                f"{OCAPI}/api/startAuth",
+                payload={
+                    "data": {
+                        "authCompleted": True,
+                        "accessToken": {"token": "final-token"},
+                    },
+                    "meta": {"code": 200},
+                },
+            )
             # Step 4: session
-            m.get(f"{MYAPI}/hmsweb/users/session/v3", payload={
-                "data": {"mqttUrl": "wss://mqtt.arlo.com:8084"},
-                "success": True,
-            })
+            m.get(
+                f"{MYAPI}/hmsweb/users/session/v3",
+                payload={
+                    "data": {"mqttUrl": "wss://mqtt.arlo.com:8084"},
+                    "success": True,
+                },
+            )
             yield m
 
     async def test_trusted_login_returns_token(self, mocked: aioresponses) -> None:
@@ -78,30 +91,39 @@ class TestFirstTimeFlow:
     async def test_raises_push_approval_required(self) -> None:
         with aioresponses() as m:
             # Step 1: auth
-            m.post(f"{OCAPI}/api/auth", payload={
-                "data": {
-                    "token": "initial-token",
-                    "userId": "USER-123",
-                    "authCompleted": False,
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                    },
+                    "meta": {"code": 200},
                 },
-                "meta": {"code": 200},
-            })
+            )
             # Step 2: getFactorId FAILS (not trusted)
-            m.post(f"{OCAPI}/api/getFactorId", payload={
-                "data": {},
-                "meta": {"code": 400, "error": "4012"},
-            })
-            # Step 3: startAuth returns factors
-            m.post(f"{OCAPI}/api/startAuth", payload={
-                "data": {
-                    "factorAuthCode": "auth-code-xyz",
-                    "factors": [
-                        {"factorType": "PUSH", "displayName": "iPhone"},
-                    ],
-                    "MFA_Config": {"timeout": {"PUSH": 120}},
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={
+                    "data": {},
+                    "meta": {"code": 400, "error": "4012"},
                 },
-                "meta": {"code": 200},
-            })
+            )
+            # Step 3: startAuth returns factors
+            m.post(
+                f"{OCAPI}/api/startAuth",
+                payload={
+                    "data": {
+                        "factorAuthCode": "auth-code-xyz",
+                        "factors": [
+                            {"factorType": "PUSH", "displayName": "iPhone"},
+                        ],
+                        "MFA_Config": {"timeout": {"PUSH": 120}},
+                    },
+                    "meta": {"code": 200},
+                },
+            )
 
             client = make_client()
             async with client:
@@ -115,10 +137,13 @@ class TestFirstTimeFlow:
 class TestAuthFailure:
     async def test_bad_credentials_raises(self) -> None:
         with aioresponses() as m:
-            m.post(f"{OCAPI}/api/auth", payload={
-                "data": {},
-                "meta": {"code": 401, "error": "1006"},
-            })
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {},
+                    "meta": {"code": 401, "error": "1006"},
+                },
+            )
 
             client = make_client()
             async with client:

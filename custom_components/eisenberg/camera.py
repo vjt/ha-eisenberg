@@ -7,7 +7,7 @@ import logging
 import aiohttp
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -25,10 +25,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Eisenberg cameras."""
     coordinator: EisenbergCoordinator = entry.runtime_data
-    async_add_entities(
-        EisenbergCamera(coordinator, device)
-        for device in coordinator.devices
-    )
+    async_add_entities(EisenbergCamera(coordinator, device) for device in coordinator.devices)
 
 
 class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
@@ -62,17 +59,14 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         url = self.coordinator.latest_thumbnails.get(self._device.device_id)
         if not url:
             # Try latest snapshot
-            url = self.coordinator.latest_snapshots.get(
-                self._device.device_id
-            )
+            url = self.coordinator.latest_snapshots.get(self._device.device_id)
         if not url:
             return None
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
+            async with aiohttp.ClientSession() as session, session.get(url) as resp:
+                if resp.status == 200:
+                    return await resp.read()
         except Exception:
             _LOGGER.debug("Failed to fetch camera image from %s", url)
 
@@ -81,9 +75,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
     async def stream_source(self) -> str | None:
         """Return the RTSP stream source URL."""
         try:
-            resp = await self.coordinator.client.start_stream(
-                self._device.device_id
-            )
+            resp = await self.coordinator.client.start_stream(self._device.device_id)
             return resp.url
         except Exception:
             _LOGGER.exception("Failed to start stream for %s", self._device.device_id)

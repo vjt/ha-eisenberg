@@ -32,9 +32,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class BatterySensor(
-    CoordinatorEntity[EisenbergCoordinator], SensorEntity
-):
+class BatterySensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
     """Battery level sensor."""
 
     _attr_has_entity_name = True
@@ -65,9 +63,7 @@ class BatterySensor(
         return props.get("batteryLevel")
 
 
-class SignalStrengthSensor(
-    CoordinatorEntity[EisenbergCoordinator], SensorEntity
-):
+class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
     """WiFi signal strength sensor."""
 
     _attr_has_entity_name = True

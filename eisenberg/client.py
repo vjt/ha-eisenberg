@@ -14,17 +14,17 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
+if TYPE_CHECKING:
+    from types import TracebackType
+
 from aiohttp import ClientSession, CookieJar
 
 from .exceptions import (
     APIError,
     AuthenticationError,
     PushApprovalRequired,
-    SessionExpiredError,
 )
 from .models import DeviceInfo, StreamResponse
 
@@ -106,18 +106,14 @@ class EisenbergClient:
             "Auth-Version": "2",
             "X-User-Device-Id": self._device_id,
             "X-User-Device-Type": "BROWSER",
-            "X-User-Device-Automation-Name": base64.b64encode(
-                b"BROWSER"
-            ).decode(),
+            "X-User-Device-Automation-Name": base64.b64encode(b"BROWSER").decode(),
             "X-Service-Version": "v3",
             "Origin": "https://my.arlo.com",
             "Referer": "https://my.arlo.com/",
             "User-Agent": _BROWSER_UA,
         }
         if token:
-            headers["Authorization"] = base64.b64encode(
-                token.encode()
-            ).decode()
+            headers["Authorization"] = base64.b64encode(token.encode()).decode()
         return headers
 
     def _myapi_headers(self, token: str) -> dict[str, str]:
@@ -166,9 +162,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if body["meta"]["code"] != 200:
-            raise AuthenticationError(
-                f"Auth failed: {body['meta'].get('error', 'unknown')}"
-            )
+            raise AuthenticationError(f"Auth failed: {body['meta'].get('error', 'unknown')}")
 
         auth_data = body["data"]
         token = auth_data["token"]
@@ -207,15 +201,11 @@ class EisenbergClient:
                 body = await resp.json()
 
             if body["meta"]["code"] != 200:
-                raise AuthenticationError(
-                    f"Trusted startAuth failed: {body['meta'].get('error')}"
-                )
+                raise AuthenticationError(f"Trusted startAuth failed: {body['meta'].get('error')}")
 
             start_data = body["data"]
             if not start_data.get("authCompleted"):
-                raise AuthenticationError(
-                    "Trusted browser auth did not auto-complete"
-                )
+                raise AuthenticationError("Trusted browser auth did not auto-complete")
 
             self.token = start_data["accessToken"]["token"]
             self._token_issued_at = time.monotonic()
@@ -232,9 +222,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if body["meta"]["code"] != 200:
-            raise AuthenticationError(
-                f"startAuth failed: {body['meta'].get('error')}"
-            )
+            raise AuthenticationError(f"startAuth failed: {body['meta'].get('error')}")
 
         start_data = body["data"]
         # Store token for use in complete_push_approval
@@ -268,10 +256,7 @@ class EisenbergClient:
             ) as resp:
                 body = await resp.json()
 
-            if (
-                body["meta"]["code"] == 200
-                and body["data"].get("authCompleted")
-            ):
+            if body["meta"]["code"] == 200 and body["data"].get("authCompleted"):
                 finish_data = body["data"]
                 self.token = finish_data["token"]
                 self._token_issued_at = time.monotonic()
@@ -287,9 +272,7 @@ class EisenbergClient:
             elapsed += poll_interval
             await asyncio.sleep(poll_interval)
 
-        raise AuthenticationError(
-            f"Push approval not received within {timeout}s"
-        )
+        raise AuthenticationError(f"Push approval not received within {timeout}s")
 
     async def _pair_browser(self, browser_auth_code: str) -> None:
         """Register this browser as trusted (sets 14-day cookie)."""

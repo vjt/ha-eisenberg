@@ -150,9 +150,7 @@ class SnapshotAvailable(BaseModel):
     model_config = {"populate_by_name": True}
 
     presigned_url: str = Field(alias="presignedFullFrameSnapshotUrl")
-    disable_privacy_zones: bool | None = Field(
-        None, alias="disablePrivacyZones"
-    )
+    disable_privacy_zones: bool | None = Field(None, alias="disablePrivacyZones")
 
 
 class MediaUpload(BaseModel):
@@ -165,15 +163,9 @@ class MediaUpload(BaseModel):
     created_date: str | None = Field(None, alias="createdDate")
     owner_id: str | None = Field(None, alias="ownerId")
     media_object_count: int | None = Field(None, alias="mediaObjectCount")
-    presigned_content_url: str | None = Field(
-        None, alias="presignedContentUrl"
-    )
-    presigned_thumbnail_url: str | None = Field(
-        None, alias="presignedThumbnailUrl"
-    )
-    presigned_last_image_url: str | None = Field(
-        None, alias="presignedLastImageUrl"
-    )
+    presigned_content_url: str | None = Field(None, alias="presignedContentUrl")
+    presigned_thumbnail_url: str | None = Field(None, alias="presignedThumbnailUrl")
+    presigned_last_image_url: str | None = Field(None, alias="presignedLastImageUrl")
     unique_id: str | None = Field(None, alias="uniqueId")
     recording_stopped: bool | None = Field(None, alias="recordingStopped")
 

@@ -8,7 +8,6 @@ list sync).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import timedelta
@@ -27,7 +26,6 @@ from eisenberg import (
     DeviceInfo,
     EisenbergClient,
     MQTTEventStream,
-    SessionExpiredError,
 )
 from eisenberg.models import (
     ActiveMode,
@@ -42,7 +40,6 @@ from eisenberg.models import (
 from .const import (
     CONF_DEVICE_ID,
     CONF_MEDIA_DIR,
-    DEFAULT_DETECTION_TIMEOUT,
     DOMAIN,
     EVENT_MEDIA,
 )
@@ -103,9 +100,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_setup(self) -> None:
         """Initialize client and MQTT on first refresh."""
-        self._http_session = aiohttp.ClientSession(
-            cookie_jar=aiohttp.CookieJar(unsafe=True)
-        )
+        self._http_session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
         self.client._session = self._http_session
         self.client._owns_session = False
 
@@ -152,9 +147,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt.on("u/+/in/library/add", self._handle_media_upload)
 
         # Mode changes
-        self._mqtt.on(
-            "u/+/in/automation/activeMode/is", self._handle_active_mode
-        )
+        self._mqtt.on("u/+/in/automation/activeMode/is", self._handle_active_mode)
 
         # Connectivity
         self._mqtt.on(
@@ -165,9 +158,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Reconnect handler
         self._mqtt.on_disconnect(self._handle_mqtt_disconnect)
 
-    async def _handle_camera_state(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_camera_state(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle camera device state updates."""
         # Extract device_id from topic: d/{xCloudId}/out/cameras/{deviceId}/is
         parts = topic.split("/")
@@ -193,9 +184,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
-    async def _handle_snapshot(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_snapshot(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle snapshot available notification."""
         parts = topic.split("/")
         if len(parts) < 5:
@@ -209,9 +198,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug("Snapshot available for %s", device_id)
 
             # Archive if configured
-            await self._archive_media(
-                device_id, snap.presigned_url, "snapshot", "jpg"
-            )
+            await self._archive_media(device_id, snap.presigned_url, "snapshot", "jpg")
 
             self.async_set_updated_data(self.data or {})
         except Exception:
@@ -221,9 +208,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
-    async def _handle_siren(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_siren(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle siren state updates."""
         parts = topic.split("/")
         if len(parts) < 5:
@@ -243,9 +228,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
-    async def _handle_feed(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_feed(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle feed notifications (motion events, mode changes)."""
         feed_type = payload.get("type")
 
@@ -274,21 +257,22 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         f"motion_{(event.obj_category or 'unknown').lower()}_thumb",
                         "jpg",
                     )
-                    self.latest_thumbnails[event.device_id] = (
-                        event.thumbnail_url
-                    )
+                    self.latest_thumbnails[event.device_id] = event.thumbnail_url
 
                 # Fire HA event
-                self.hass.bus.async_fire(EVENT_MEDIA, {
-                    "device_id": event.device_id,
-                    "type": "motion",
-                    "category": event.obj_category,
-                    "categories": event.obj_categories,
-                    "content_url": event.content_url,
-                    "thumbnail_url": event.thumbnail_url,
-                    "duration": event.duration,
-                    "timestamp": event.utc_created_date,
-                })
+                self.hass.bus.async_fire(
+                    EVENT_MEDIA,
+                    {
+                        "device_id": event.device_id,
+                        "type": "motion",
+                        "category": event.obj_category,
+                        "categories": event.obj_categories,
+                        "content_url": event.content_url,
+                        "thumbnail_url": event.thumbnail_url,
+                        "duration": event.duration,
+                        "timestamp": event.utc_created_date,
+                    },
+                )
 
                 self.async_set_updated_data(self.data or {})
             except Exception:
@@ -315,9 +299,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
-    async def _handle_media_upload(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_media_upload(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle media upload notifications."""
         try:
             upload = MediaUpload.model_validate(payload)
@@ -332,9 +314,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
-    async def _handle_active_mode(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_active_mode(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle automation active mode updates."""
         properties = payload.get("properties", {})
         try:
@@ -348,9 +328,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
-    async def _handle_connectivity(
-        self, topic: str, payload: dict[str, Any]
-    ) -> None:
+    async def _handle_connectivity(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle connectivity updates."""
         _LOGGER.debug("Connectivity update: %s", json.dumps(payload)[:200])
 
@@ -398,9 +376,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await self.hass.async_add_executor_job(_write)
                     _LOGGER.debug("Archived %s to %s", media_type, filepath)
                 else:
-                    _LOGGER.warning(
-                        "Failed to download %s: HTTP %d", url, resp.status
-                    )
+                    _LOGGER.warning("Failed to download %s: HTTP %d", url, resp.status)
         except Exception:
             _LOGGER.exception("Error archiving media %s", url)
 
@@ -418,11 +394,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._mqtt is None and self.client.mqtt_url:
             _LOGGER.info("Reconnecting MQTT")
             try:
-                if (
-                    self.client.user_id
-                    and self.client.token
-                    and self._http_session
-                ):
+                if self.client.user_id and self.client.token and self._http_session:
                     self._mqtt = MQTTEventStream(
                         mqtt_url=self.client.mqtt_url,
                         user_id=self.client.user_id,
