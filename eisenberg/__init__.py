@@ -1,5 +1,6 @@
 """Eisenberg -- async Python client for the Arlo camera API."""
 
+from .client import EisenbergClient
 from .exceptions import (
     APIError,
     AuthenticationError,
@@ -21,6 +22,7 @@ from .models import (
     SnapshotAvailable,
     StreamResponse,
 )
+from .mqtt import MQTTEventStream
 
 __all__ = [
     "APIError",
@@ -30,8 +32,10 @@ __all__ = [
     "Connectivity",
     "DeviceInfo",
     "DeviceState",
+    "EisenbergClient",
     "EisenbergError",
     "MQTTConnectionError",
+    "MQTTEventStream",
     "MediaUpload",
     "ModeChangeEvent",
     "MotionEvent",
