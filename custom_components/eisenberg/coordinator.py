@@ -140,6 +140,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._register_mqtt_handlers()
             await self._mqtt.connect()
 
+        # Request initial snapshots for all cameras
+        for device in self._devices:
+            try:
+                await self.client.request_snapshot(device.device_id)
+                _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
+            except Exception:
+                _LOGGER.debug("Could not request snapshot for %s", device.device_id)
+
     def _register_mqtt_handlers(self) -> None:
         """Register MQTT topic handlers."""
         if self._mqtt is None:
