@@ -255,7 +255,7 @@ class EisenbergClient:
         """
         import asyncio
 
-        _LOGGER.debug("Polling finishAuth for push approval")
+        _LOGGER.info("Polling finishAuth for push approval")
         elapsed = 0
         while elapsed < timeout:
             async with self.session.post(
@@ -269,7 +269,7 @@ class EisenbergClient:
                 body = await resp.json()
 
             meta = body["meta"]
-            _LOGGER.debug("finishAuth: code=%s", meta["code"])
+            _LOGGER.info("finishAuth: code=%s msg=%s", meta["code"], meta.get("message"))
 
             if meta.get("message") == "Too many requests":
                 raise RateLimitedError(

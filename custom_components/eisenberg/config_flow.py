@@ -89,15 +89,22 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             self._push_error = "cannot_connect"
             return
         try:
+            _LOGGER.info("Starting push approval polling")
             await self._client.complete_push_approval(
                 factor_auth_code=self._factor_auth_code,
                 timeout=120,
             )
             self._token = self._client.token
+            _LOGGER.info("Push approval succeeded")
         except RateLimitedError:
+            _LOGGER.warning("Push approval: rate limited by Arlo")
             self._push_error = "rate_limited"
-        except AuthenticationError:
+        except AuthenticationError as err:
+            _LOGGER.warning("Push approval failed: %s", err)
             self._push_error = "push_timeout"
+        except Exception:
+            _LOGGER.exception("Push approval: unexpected error")
+            self._push_error = "cannot_connect"
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: Email and password."""
@@ -158,11 +165,8 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Step 2: Called when push_task completes."""
-        # Clean up session
         await self._cleanup_client()
 
-        if self._push_error == "rate_limited":
-            return self.async_abort(reason="rate_limited")
         if self._push_error:
             return self.async_show_progress_done(next_step_id="push_failed")
 
@@ -172,6 +176,9 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Push approval failed — show error and let user retry."""
+        error = self._push_error or "push_timeout"
+        if error == "rate_limited":
+            return self.async_abort(reason="rate_limited")
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -180,7 +187,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PASSWORD): str,
                 }
             ),
-            errors={"base": "push_timeout"},
+            errors={"base": error},
         )
 
     async def async_step_media_storage(
@@ -301,8 +308,6 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         """Reauth: called when push_task completes."""
         await self._cleanup_client()
 
-        if self._push_error == "rate_limited":
-            return self.async_abort(reason="rate_limited")
         if self._push_error:
             return self.async_show_progress_done(next_step_id="reauth_confirm")
 
