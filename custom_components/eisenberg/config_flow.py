@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import asyncio
 
 import voluptuous as vol
 from aiohttp import CookieJar
@@ -71,12 +74,30 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         self._password: str = ""
         self._factor_auth_code: str = ""
         self._token: str | None = None
+        self._push_task: asyncio.Task[None] | None = None
+        self._push_error: str | None = None
 
     async def _cleanup_client(self) -> None:
         """Close client session if open."""
         if self._client:
             await self._client.__aexit__(None, None, None)
             self._client = None
+
+    async def _do_push_approval(self) -> None:
+        """Background task: poll finishAuth until push is approved."""
+        if self._client is None:
+            self._push_error = "cannot_connect"
+            return
+        try:
+            await self._client.complete_push_approval(
+                factor_auth_code=self._factor_auth_code,
+                timeout=120,
+            )
+            self._token = self._client.token
+        except RateLimitedError:
+            self._push_error = "rate_limited"
+        except AuthenticationError:
+            self._push_error = "push_timeout"
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: Email and password."""
@@ -96,21 +117,20 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                # Manually enter context — don't use `async with` because
-                # PushApprovalRequired needs the session kept alive for
-                # the finishAuth polling in the next step.
                 await self._client.__aenter__()
                 await self._client.login()
                 self._token = self._client.token
                 await self._cleanup_client()
-                # Trusted browser — skip push
                 return await self.async_step_media_storage()
             except PushApprovalRequired as err:
-                # Session stays open — push_approval step will use it
+                # Session stays open for finishAuth polling
                 self._factor_auth_code = err.factor_auth_code
+                self._push_error = None
+                self._push_task = self.hass.async_create_task(self._do_push_approval())
                 return self.async_show_progress(
                     step_id="push_approval",
                     progress_action="push_approval",
+                    progress_task=self._push_task,
                 )
             except RateLimitedError:
                 await self._cleanup_client()
@@ -137,26 +157,16 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_push_approval(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2: Poll for push approval (runs automatically, no submit button)."""
-        if self._client is None:
-            return self.async_abort(reason="cannot_connect")
+        """Step 2: Called when push_task completes."""
+        # Clean up session
+        await self._cleanup_client()
 
-        try:
-            # Session is still open from async_step_user.
-            # This polls finishAuth until the user approves the push.
-            await self._client.complete_push_approval(
-                factor_auth_code=self._factor_auth_code,
-                timeout=120,
-            )
-            self._token = self._client.token
-            await self._cleanup_client()
-            return self.async_show_progress_done(next_step_id="media_storage")
-        except RateLimitedError:
-            await self._cleanup_client()
+        if self._push_error == "rate_limited":
             return self.async_abort(reason="rate_limited")
-        except AuthenticationError:
-            await self._cleanup_client()
+        if self._push_error:
             return self.async_show_progress_done(next_step_id="push_failed")
+
+        return self.async_show_progress_done(next_step_id="media_storage")
 
     async def async_step_push_failed(
         self, user_input: dict[str, Any] | None = None
@@ -183,7 +193,6 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(self._username)
             self._abort_if_unique_id_configured()
 
-            # Serialize cookies for persistence so coordinator can restore trust
             cookies: list[dict[str, str]] = []
             if self._cookie_jar is not None:
                 cookies = _serialize_cookies(self._cookie_jar)
@@ -202,7 +211,6 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                 },
             )
 
-        # Build media dir options from HA config
         media_dirs = self.hass.config.media_dirs
         options = {MEDIA_DIR_DISABLED: "Disabled"}
         for name, path in media_dirs.items():
@@ -262,9 +270,12 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             except PushApprovalRequired as err:
                 self._factor_auth_code = err.factor_auth_code
+                self._push_error = None
+                self._push_task = self.hass.async_create_task(self._do_push_approval())
                 return self.async_show_progress(
                     step_id="reauth_push",
                     progress_action="push_approval",
+                    progress_task=self._push_task,
                 )
             except RateLimitedError:
                 await self._cleanup_client()
@@ -287,22 +298,15 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_push(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Reauth: poll for push approval."""
-        if self._client is None:
-            return self.async_abort(reason="cannot_connect")
+        """Reauth: called when push_task completes."""
+        await self._cleanup_client()
 
-        try:
-            await self._client.complete_push_approval(
-                factor_auth_code=self._factor_auth_code,
-            )
-            await self._cleanup_client()
-            return self.async_show_progress_done(next_step_id="reauth_complete")
-        except RateLimitedError:
-            await self._cleanup_client()
+        if self._push_error == "rate_limited":
             return self.async_abort(reason="rate_limited")
-        except AuthenticationError:
-            await self._cleanup_client()
+        if self._push_error:
             return self.async_show_progress_done(next_step_id="reauth_confirm")
+
+        return self.async_show_progress_done(next_step_id="reauth_complete")
 
     async def async_step_reauth_complete(
         self, user_input: dict[str, Any] | None = None
@@ -355,7 +359,10 @@ class EisenbergOptionsFlow(OptionsFlow):
                     ): vol.In(options),
                     vol.Required(
                         CONF_DETECTION_TIMEOUT,
-                        default=opts.get(CONF_DETECTION_TIMEOUT, DEFAULT_DETECTION_TIMEOUT),
+                        default=opts.get(
+                            CONF_DETECTION_TIMEOUT,
+                            DEFAULT_DETECTION_TIMEOUT,
+                        ),
                     ): vol.All(int, vol.Range(min=5, max=300)),
                 }
             ),
