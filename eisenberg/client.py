@@ -272,12 +272,9 @@ class EisenbergClient:
             _LOGGER.info("finishAuth: code=%s msg=%s", meta["code"], meta.get("message"))
 
             if meta.get("message") == "Too many requests":
-                # Back off and retry — don't abort, the rate limit may
-                # clear within our timeout window
-                _LOGGER.info("finishAuth rate-limited, backing off 10s")
-                elapsed += 10
-                await asyncio.sleep(10)
-                continue
+                raise RateLimitedError(
+                    "Arlo is rate-limiting requests. Wait a few hours and try again."
+                )
 
             if meta["code"] == 200 and body["data"].get("authCompleted"):
                 finish_data = body["data"]

@@ -140,8 +140,8 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                     progress_task=self._push_task,
                 )
             except RateLimitedError:
+                errors["base"] = "rate_limited"
                 await self._cleanup_client()
-                return self.async_abort(reason="rate_limited")
             except AuthenticationError:
                 errors["base"] = "invalid_auth"
                 await self._cleanup_client()
@@ -177,8 +177,6 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Push approval failed — show error and let user retry."""
         error = self._push_error or "push_timeout"
-        if error == "rate_limited":
-            return self.async_abort(reason="rate_limited")
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -285,8 +283,8 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                     progress_task=self._push_task,
                 )
             except RateLimitedError:
+                errors["base"] = "rate_limited"
                 await self._cleanup_client()
-                return self.async_abort(reason="rate_limited")
             except AuthenticationError:
                 errors["base"] = "invalid_auth"
                 await self._cleanup_client()
@@ -309,9 +307,25 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         await self._cleanup_client()
 
         if self._push_error:
-            return self.async_show_progress_done(next_step_id="reauth_confirm")
+            return self.async_show_progress_done(next_step_id="reauth_push_failed")
 
         return self.async_show_progress_done(next_step_id="reauth_complete")
+
+    async def async_step_reauth_push_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reauth push failed — show error and let user retry."""
+        error = self._push_error or "push_timeout"
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME, default=self._username): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors={"base": error},
+        )
 
     async def async_step_reauth_complete(
         self, user_input: dict[str, Any] | None = None
