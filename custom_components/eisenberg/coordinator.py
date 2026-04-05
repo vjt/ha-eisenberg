@@ -40,6 +40,7 @@ from eisenberg.models import (
 from .const import (
     CONF_DEVICE_ID,
     CONF_MEDIA_DIR,
+    CONF_TRUST_COOKIE,
     DOMAIN,
     EVENT_MEDIA,
 )
@@ -100,7 +101,24 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_setup(self) -> None:
         """Initialize client and MQTT on first refresh."""
-        self._http_session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+        import http.cookies
+
+        from yarl import URL
+
+        cookie_jar = aiohttp.CookieJar(unsafe=True)
+
+        # Restore trust cookies from config entry
+        saved_cookies: list[dict[str, str]] = self.entry.data.get(CONF_TRUST_COOKIE, [])
+        for cookie_data in saved_cookies:
+            sc = http.cookies.SimpleCookie[str]()
+            name = cookie_data["name"]
+            sc[name] = cookie_data["value"]
+            sc[name]["domain"] = cookie_data.get("domain", "")
+            sc[name]["path"] = cookie_data.get("path", "/")
+            domain = cookie_data.get("domain", "ocapi-app.arlo.com")
+            cookie_jar.update_cookies(sc, URL(f"https://{domain}"))
+
+        self._http_session = aiohttp.ClientSession(cookie_jar=cookie_jar)
         self.client.set_http_session(self._http_session)
 
         try:

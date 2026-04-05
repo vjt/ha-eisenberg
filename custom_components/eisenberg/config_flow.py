@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 import voluptuous as vol
+from aiohttp import CookieJar
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -27,6 +28,7 @@ from .const import (
     CONF_DETECTION_TIMEOUT,
     CONF_DEVICE_ID,
     CONF_MEDIA_DIR,
+    CONF_TRUST_COOKIE,
     DEFAULT_DETECTION_TIMEOUT,
     DOMAIN,
 )
@@ -36,6 +38,21 @@ _LOGGER = logging.getLogger(__name__)
 MEDIA_DIR_DISABLED = "__disabled__"
 
 
+def _serialize_cookies(cookie_jar: CookieJar) -> list[dict[str, str]]:
+    """Extract cookies from aiohttp CookieJar for persistence."""
+    cookies: list[dict[str, str]] = []
+    for morsel in cookie_jar:
+        cookies.append(
+            {
+                "name": morsel.key,
+                "value": morsel.value,
+                "domain": morsel["domain"],
+                "path": morsel["path"],
+            }
+        )
+    return cookies
+
+
 class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Eisenberg."""
 
@@ -43,10 +60,12 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._client: EisenbergClient | None = None
+        self._cookie_jar: CookieJar | None = None
         self._device_id: str = ""
         self._username: str = ""
         self._password: str = ""
         self._factor_auth_code: str = ""
+        self._token: str | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: Email and password."""
@@ -57,19 +76,23 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             self._password = user_input[CONF_PASSWORD]
             self._device_id = f"eisenberg-{uuid.uuid4()}"
 
+            self._cookie_jar = CookieJar(unsafe=True)
             self._client = EisenbergClient(
                 email=self._username,
                 password=self._password,
                 device_id=self._device_id,
+                cookie_jar=self._cookie_jar,
             )
 
             try:
                 async with self._client:
                     await self._client.login()
+                    self._token = self._client.token
                 # Trusted browser — skip push
                 return await self.async_step_media_storage()
             except PushApprovalRequired as err:
                 self._factor_auth_code = err.factor_auth_code
+                # DON'T close the client — we need the session for push approval
                 return await self.async_step_push_approval()
             except AuthenticationError:
                 errors["base"] = "invalid_auth"
@@ -98,11 +121,13 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None and self._client is not None:
             try:
+                # Reuse the same client+session from step_user — cookie jar preserved
                 async with self._client:
                     await self._client.complete_push_approval(
                         factor_auth_code=self._factor_auth_code,
                         timeout=120,
                     )
+                    self._token = self._client.token
                 return await self.async_step_media_storage()
             except AuthenticationError:
                 errors["base"] = "push_timeout"
@@ -123,12 +148,18 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(self._username)
             self._abort_if_unique_id_configured()
 
+            # Serialize cookies for persistence so coordinator can restore trust
+            cookies: list[dict[str, str]] = []
+            if self._cookie_jar is not None:
+                cookies = _serialize_cookies(self._cookie_jar)
+
             return self.async_create_entry(
                 title=self._username,
                 data={
                     CONF_USERNAME: self._username,
                     CONF_PASSWORD: self._password,
                     CONF_DEVICE_ID: self._device_id,
+                    CONF_TRUST_COOKIE: cookies,
                 },
                 options={
                     CONF_MEDIA_DIR: media_dir if media_dir != MEDIA_DIR_DISABLED else "",
@@ -170,15 +201,19 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             self._password = user_input[CONF_PASSWORD]
             self._device_id = entry.data.get(CONF_DEVICE_ID, f"eisenberg-{uuid.uuid4()}")
 
+            self._cookie_jar = CookieJar(unsafe=True)
             self._client = EisenbergClient(
                 email=self._username,
                 password=self._password,
                 device_id=self._device_id,
+                cookie_jar=self._cookie_jar,
             )
 
             try:
                 async with self._client:
                     await self._client.login()
+
+                cookies = _serialize_cookies(self._cookie_jar)
                 return self.async_update_reload_and_abort(
                     entry,
                     data={
@@ -186,6 +221,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_USERNAME: self._username,
                         CONF_PASSWORD: self._password,
                         CONF_DEVICE_ID: self._device_id,
+                        CONF_TRUST_COOKIE: cookies,
                     },
                 )
             except PushApprovalRequired as err:
@@ -219,6 +255,10 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                     await self._client.complete_push_approval(
                         factor_auth_code=self._factor_auth_code,
                     )
+
+                cookies: list[dict[str, str]] = []
+                if self._cookie_jar is not None:
+                    cookies = _serialize_cookies(self._cookie_jar)
                 return self.async_update_reload_and_abort(
                     entry,
                     data={
@@ -226,6 +266,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_USERNAME: self._username,
                         CONF_PASSWORD: self._password,
                         CONF_DEVICE_ID: self._device_id,
+                        CONF_TRUST_COOKIE: cookies,
                     },
                 )
             except AuthenticationError:
