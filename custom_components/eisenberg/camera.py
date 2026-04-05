@@ -7,7 +7,7 @@ import logging
 import aiohttp
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -33,6 +33,8 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
 
     _attr_has_entity_name = True
     _attr_name = None  # Use device name
+    _attr_is_streaming: bool = False
+    _attr_motion_detection_enabled: bool = True
 
     def __init__(
         self,
@@ -81,18 +83,17 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
             return None
 
-    @property
-    def is_streaming(self) -> bool:
-        """Return whether the camera is streaming."""
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update streaming and motion detection state from coordinator."""
         state = self.coordinator.device_states.get(self._device.device_id)
         if state and state.activity_state:
-            return state.activity_state in (
+            self._attr_is_streaming = state.activity_state in (
                 "userStreamActive",
                 "alertStreamActive",
             )
-        return False
+        else:
+            self._attr_is_streaming = False
 
-    @property
-    def motion_detection_enabled(self) -> bool:
-        """Return whether motion detection is enabled."""
-        return self.coordinator.active_mode != "standby"
+        self._attr_motion_detection_enabled = self.coordinator.active_mode != "standby"
+        self.async_write_ha_state()

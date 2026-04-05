@@ -98,11 +98,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return Path(path_str) / "eisenberg"
 
-    async def _async_setup(self) -> None:
+    async def async_setup(self) -> None:
         """Initialize client and MQTT on first refresh."""
         self._http_session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
-        self.client._session = self._http_session
-        self.client._owns_session = False
+        self.client.set_http_session(self._http_session)
 
         try:
             await self.client.login()

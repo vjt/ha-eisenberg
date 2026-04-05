@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -9,13 +11,18 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from eisenberg import DeviceInfo
 
 from .coordinator import EisenbergCoordinator
+
+if TYPE_CHECKING:
+    from datetime import date, datetime
+    from decimal import Decimal
 
 
 async def async_setup_entry(
@@ -40,6 +47,7 @@ class BatterySensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_value: StateType | date | datetime | Decimal = None
 
     def __init__(
         self,
@@ -52,15 +60,19 @@ class BatterySensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
         self._attr_device_info = {
             "identifiers": {("eisenberg", device.device_id)},
         }
+        # Seed from initial device info
+        props = device.properties or {}
+        battery = props.get("batteryLevel")
+        if isinstance(battery, int):
+            self._attr_native_value = battery
 
-    @property
-    def native_value(self) -> int | None:
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update battery level from coordinator state."""
         state = self.coordinator.device_states.get(self._device.device_id)
         if state and state.battery_level is not None:
-            return state.battery_level
-        # Fallback to initial device info
-        props = self._device.properties or {}
-        return props.get("batteryLevel")
+            self._attr_native_value = state.battery_level
+        self.async_write_ha_state()
 
 
 class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
@@ -72,6 +84,7 @@ class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
     _attr_entity_registry_enabled_default = False
+    _attr_native_value: StateType | date | datetime | Decimal = None
 
     def __init__(
         self,
@@ -85,9 +98,10 @@ class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity
             "identifiers": {("eisenberg", device.device_id)},
         }
 
-    @property
-    def native_value(self) -> int | None:
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update signal strength from coordinator state."""
         state = self.coordinator.device_states.get(self._device.device_id)
         if state and state.signal_strength is not None:
-            return state.signal_strength
-        return None
+            self._attr_native_value = state.signal_strength
+        self.async_write_ha_state()

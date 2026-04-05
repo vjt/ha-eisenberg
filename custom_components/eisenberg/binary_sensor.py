@@ -51,6 +51,7 @@ class MotionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.MOTION
     _attr_name = "Motion"
+    _attr_is_on: bool | None = None
 
     def __init__(
         self,
@@ -64,13 +65,13 @@ class MotionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
             "identifiers": {("eisenberg", device.device_id)},
         }
 
-    @property
-    def is_on(self) -> bool | None:
-        """Return True if motion is detected."""
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update is_on from coordinator state."""
         state = self.coordinator.device_states.get(self._device.device_id)
-        if state is None:
-            return None
-        return state.motion_detected
+        if state is not None:
+            self._attr_is_on = state.motion_detected
+        self.async_write_ha_state()
 
 
 class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
@@ -83,6 +84,7 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
 
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.MOTION
+    _attr_is_on: bool | None = False
 
     def __init__(
         self,
@@ -95,17 +97,12 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
         self._device = device
         self._category = category
         self._entry = entry
-        self._is_on = False
         self._reset_task: asyncio.Task[None] | None = None
         self._attr_name = f"{category} detected"
         self._attr_unique_id = f"{device.device_id}_{category.lower()}"
         self._attr_device_info = {
             "identifiers": {("eisenberg", device.device_id)},
         }
-
-    @property
-    def is_on(self) -> bool:
-        return self._is_on
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -115,9 +112,9 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
             event
             and event.obj_categories
             and self._category in event.obj_categories
-            and not self._is_on
+            and not self._attr_is_on
         ):
-            self._is_on = True
+            self._attr_is_on = True
             self._schedule_reset()
             self.async_write_ha_state()
 
@@ -130,7 +127,7 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
 
         async def _reset() -> None:
             await asyncio.sleep(timeout)
-            self._is_on = False
+            self._attr_is_on = False
             self.async_write_ha_state()
 
         self._reset_task = self.hass.async_create_task(_reset())

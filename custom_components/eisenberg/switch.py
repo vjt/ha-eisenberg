@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -35,6 +35,7 @@ class SirenSwitch(CoordinatorEntity[EisenbergCoordinator], SwitchEntity):
     _attr_name = "Siren"
     _attr_device_class = SwitchDeviceClass.SWITCH
     _attr_icon = "mdi:alarm-light"
+    _attr_is_on: bool | None = False
 
     def __init__(
         self,
@@ -48,13 +49,13 @@ class SirenSwitch(CoordinatorEntity[EisenbergCoordinator], SwitchEntity):
             "identifiers": {("eisenberg", device.device_id)},
         }
 
-    @property
-    def is_on(self) -> bool:
-        """Return True if siren is on."""
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update siren state from coordinator."""
         state = self.coordinator.siren_states.get(self._device.device_id)
         if state:
-            return state.is_on
-        return False
+            self._attr_is_on = state.is_on
+        self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn siren on."""

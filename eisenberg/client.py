@@ -67,6 +67,11 @@ class EisenbergClient:
         self._x_cloud_id: str | None = None
         self._token_issued_at: float = 0
 
+    def set_http_session(self, session: ClientSession) -> None:
+        """Inject an external HTTP session (coordinator uses this)."""
+        self._session = session
+        self._owns_session = False
+
     async def __aenter__(self) -> EisenbergClient:
         if self._session is None:
             if self._cookie_jar is None:

@@ -55,7 +55,7 @@ class TopicRouter:
     def match(self, topic: str) -> list[EventHandler]:
         """Find all handlers matching a topic."""
         parts = topic.split("/")
-        matched = []
+        matched: list[EventHandler] = []
         for pattern_parts, handler in self._routes:
             if self._matches(pattern_parts, parts):
                 matched.append(handler)

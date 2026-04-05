@@ -20,7 +20,7 @@ PLATFORMS = ["camera", "binary_sensor", "sensor", "switch"]
 async def async_setup_entry(hass: HomeAssistant, entry: EisenbergConfigEntry) -> bool:
     """Set up Eisenberg from a config entry."""
     coordinator = EisenbergCoordinator(hass, entry)
-    await coordinator._async_setup()
+    await coordinator.async_setup()
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator

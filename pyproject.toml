@@ -56,6 +56,9 @@ venvPath = "."
 venv = ".venv"
 include = ["eisenberg/", "custom_components/eisenberg/"]
 reportMissingTypeStubs = false
+# CoordinatorEntity defines `available` as @property, Entity as @cached_property.
+# Every HA integration using CoordinatorEntity + platform entity hits this.
+reportIncompatibleVariableOverride = "warning"
 
 [tool.ruff]
 target-version = "py312"
