@@ -250,6 +250,7 @@ class EisenbergClient:
         """
         import asyncio
 
+        _LOGGER.debug("Polling finishAuth for push approval")
         elapsed = 0
         while elapsed < timeout:
             async with self.session.post(
@@ -262,6 +263,7 @@ class EisenbergClient:
             ) as resp:
                 body = await resp.json()
 
+            _LOGGER.debug("finishAuth: code=%s", body["meta"]["code"])
             if body["meta"]["code"] == 200 and body["data"].get("authCompleted"):
                 finish_data = body["data"]
                 self.token = finish_data["token"]

@@ -89,21 +89,29 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                async with self._client:
-                    await self._client.login()
-                    self._token = self._client.token
+                # Manually enter context — don't use `async with` because
+                # PushApprovalRequired needs the session kept alive for
+                # the finishAuth polling in the next step.
+                await self._client.__aenter__()
+                await self._client.login()
+                self._token = self._client.token
+                await self._client.__aexit__(None, None, None)
                 # Trusted browser — skip push
                 return await self.async_step_media_storage()
             except PushApprovalRequired as err:
+                # Session stays open — push_approval step will use it
                 self._factor_auth_code = err.factor_auth_code
-                # DON'T close the client — we need the session for push approval
                 return await self.async_step_push_approval()
             except AuthenticationError:
                 errors["base"] = "invalid_auth"
+                if self._client:
+                    await self._client.__aexit__(None, None, None)
                 self._client = None
             except Exception:
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "cannot_connect"
+                if self._client:
+                    await self._client.__aexit__(None, None, None)
                 self._client = None
 
         return self.async_show_form(
@@ -125,15 +133,17 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None and self._client is not None:
             try:
-                # Reuse the same client+session from step_user — cookie jar preserved
-                async with self._client:
-                    await self._client.complete_push_approval(
-                        factor_auth_code=self._factor_auth_code,
-                        timeout=120,
-                    )
-                    self._token = self._client.token
+                # Session is still open from async_step_user
+                await self._client.complete_push_approval(
+                    factor_auth_code=self._factor_auth_code,
+                    timeout=120,
+                )
+                self._token = self._client.token
+                await self._client.__aexit__(None, None, None)
                 return await self.async_step_media_storage()
             except AuthenticationError:
+                await self._client.__aexit__(None, None, None)
+                self._client = None
                 errors["base"] = "push_timeout"
 
         return self.async_show_form(
