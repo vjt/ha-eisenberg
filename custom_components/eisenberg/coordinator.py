@@ -101,22 +101,32 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_setup(self) -> None:
         """Initialize client and MQTT on first refresh."""
-        import http.cookies
 
         from yarl import URL
 
         cookie_jar = aiohttp.CookieJar(unsafe=True)
 
-        # Restore trust cookies from config entry
+        # Restore only the browser trust cookie — skip transient cookies
+        # (__cf_bm, AWSALB, JSESSIONID) which expire quickly and cause issues
         saved_cookies: list[dict[str, str]] = self.entry.data.get(CONF_TRUST_COOKIE, [])
         for cookie_data in saved_cookies:
-            sc = http.cookies.SimpleCookie[str]()
-            name = cookie_data["name"]
-            sc[name] = cookie_data["value"]
-            sc[name]["domain"] = cookie_data.get("domain", "")
-            sc[name]["path"] = cookie_data.get("path", "/")
+            if not cookie_data["name"].startswith("browser_trust_"):
+                continue
             domain = cookie_data.get("domain", "ocapi-app.arlo.com")
-            cookie_jar.update_cookies(sc, URL(f"https://{domain}"))
+            if domain.startswith("."):
+                domain = domain[1:]
+            path = cookie_data.get("path", "/")
+            # Value stays URL-encoded (e.g. %3D not =) to avoid http.cookies quoting
+            cookie_jar.update_cookies(
+                {cookie_data["name"]: cookie_data["value"]},
+                URL(f"https://{domain}{path}"),
+            )
+
+        _LOGGER.info(
+            "Restored %d cookies, trust cookie present: %s",
+            len(saved_cookies),
+            any(c["name"].startswith("browser_trust_") for c in saved_cookies),
+        )
 
         self._http_session = aiohttp.ClientSession(cookie_jar=cookie_jar)
         self.client.set_http_session(self._http_session)

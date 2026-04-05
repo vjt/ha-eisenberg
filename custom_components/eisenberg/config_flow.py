@@ -39,7 +39,11 @@ MEDIA_DIR_DISABLED = "__disabled__"
 
 
 def _serialize_cookies(cookie_jar: CookieJar) -> list[dict[str, str]]:
-    """Extract cookies from aiohttp CookieJar for persistence."""
+    """Extract cookies from aiohttp CookieJar for persistence.
+
+    Values are stored as-is (URL-encoded) — do NOT decode, because
+    http.cookies will quote raw '=' characters, breaking Arlo's server.
+    """
     cookies: list[dict[str, str]] = []
     for morsel in cookie_jar:
         cookies.append(

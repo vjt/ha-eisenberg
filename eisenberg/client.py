@@ -191,6 +191,7 @@ class EisenbergClient:
         ) as resp:
             body = await resp.json()
 
+        _LOGGER.debug("getFactorId response: code=%s", body["meta"]["code"])
         if body["meta"]["code"] == 200:
             # Browser trusted — instant auth with factorId
             factor_id = body["data"]["factorId"]
