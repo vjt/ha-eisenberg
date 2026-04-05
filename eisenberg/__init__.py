@@ -7,6 +7,7 @@ from .exceptions import (
     EisenbergError,
     MQTTConnectionError,
     PushApprovalRequired,
+    RateLimitedError,
     SessionExpiredError,
 )
 from .models import (
@@ -40,6 +41,7 @@ __all__ = [
     "ModeChangeEvent",
     "MotionEvent",
     "PushApprovalRequired",
+    "RateLimitedError",
     "SessionExpiredError",
     "SirenState",
     "SnapshotAvailable",

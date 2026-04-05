@@ -22,6 +22,7 @@ from eisenberg import (
     AuthenticationError,
     EisenbergClient,
     PushApprovalRequired,
+    RateLimitedError,
 )
 
 from .const import (
@@ -71,6 +72,12 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         self._factor_auth_code: str = ""
         self._token: str | None = None
 
+    async def _cleanup_client(self) -> None:
+        """Close client session if open."""
+        if self._client:
+            await self._client.__aexit__(None, None, None)
+            self._client = None
+
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: Email and password."""
         errors: dict[str, str] = {}
@@ -95,24 +102,26 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self._client.__aenter__()
                 await self._client.login()
                 self._token = self._client.token
-                await self._client.__aexit__(None, None, None)
+                await self._cleanup_client()
                 # Trusted browser — skip push
                 return await self.async_step_media_storage()
             except PushApprovalRequired as err:
                 # Session stays open — push_approval step will use it
                 self._factor_auth_code = err.factor_auth_code
-                return await self.async_step_push_approval()
+                return self.async_show_progress(
+                    step_id="push_approval",
+                    progress_action="push_approval",
+                )
+            except RateLimitedError:
+                await self._cleanup_client()
+                return self.async_abort(reason="rate_limited")
             except AuthenticationError:
                 errors["base"] = "invalid_auth"
-                if self._client:
-                    await self._client.__aexit__(None, None, None)
-                self._client = None
+                await self._cleanup_client()
             except Exception:
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "cannot_connect"
-                if self._client:
-                    await self._client.__aexit__(None, None, None)
-                self._client = None
+                await self._cleanup_client()
 
         return self.async_show_form(
             step_id="user",
@@ -128,28 +137,40 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_push_approval(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2: Wait for push approval."""
-        errors: dict[str, str] = {}
+        """Step 2: Poll for push approval (runs automatically, no submit button)."""
+        if self._client is None:
+            return self.async_abort(reason="cannot_connect")
 
-        if user_input is not None and self._client is not None:
-            try:
-                # Session is still open from async_step_user
-                await self._client.complete_push_approval(
-                    factor_auth_code=self._factor_auth_code,
-                    timeout=120,
-                )
-                self._token = self._client.token
-                await self._client.__aexit__(None, None, None)
-                return await self.async_step_media_storage()
-            except AuthenticationError:
-                await self._client.__aexit__(None, None, None)
-                self._client = None
-                errors["base"] = "push_timeout"
+        try:
+            # Session is still open from async_step_user.
+            # This polls finishAuth until the user approves the push.
+            await self._client.complete_push_approval(
+                factor_auth_code=self._factor_auth_code,
+                timeout=120,
+            )
+            self._token = self._client.token
+            await self._cleanup_client()
+            return self.async_show_progress_done(next_step_id="media_storage")
+        except RateLimitedError:
+            await self._cleanup_client()
+            return self.async_abort(reason="rate_limited")
+        except AuthenticationError:
+            await self._cleanup_client()
+            return self.async_show_progress_done(next_step_id="push_failed")
 
+    async def async_step_push_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Push approval failed — show error and let user retry."""
         return self.async_show_form(
-            step_id="push_approval",
-            data_schema=vol.Schema({}),
-            errors=errors,
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME, default=self._username): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors={"base": "push_timeout"},
         )
 
     async def async_step_media_storage(
@@ -224,8 +245,9 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                async with self._client:
-                    await self._client.login()
+                await self._client.__aenter__()
+                await self._client.login()
+                await self._cleanup_client()
 
                 cookies = _serialize_cookies(self._cookie_jar)
                 return self.async_update_reload_and_abort(
@@ -240,10 +262,16 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             except PushApprovalRequired as err:
                 self._factor_auth_code = err.factor_auth_code
-                return await self.async_step_reauth_push()
+                return self.async_show_progress(
+                    step_id="reauth_push",
+                    progress_action="push_approval",
+                )
+            except RateLimitedError:
+                await self._cleanup_client()
+                return self.async_abort(reason="rate_limited")
             except AuthenticationError:
                 errors["base"] = "invalid_auth"
-                self._client = None
+                await self._cleanup_client()
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -259,37 +287,40 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_push(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Reauth: wait for push approval."""
-        errors: dict[str, str] = {}
+        """Reauth: poll for push approval."""
+        if self._client is None:
+            return self.async_abort(reason="cannot_connect")
+
+        try:
+            await self._client.complete_push_approval(
+                factor_auth_code=self._factor_auth_code,
+            )
+            await self._cleanup_client()
+            return self.async_show_progress_done(next_step_id="reauth_complete")
+        except RateLimitedError:
+            await self._cleanup_client()
+            return self.async_abort(reason="rate_limited")
+        except AuthenticationError:
+            await self._cleanup_client()
+            return self.async_show_progress_done(next_step_id="reauth_confirm")
+
+    async def async_step_reauth_complete(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Finalize reauth after successful push approval."""
         entry = self._get_reauth_entry()
-
-        if user_input is not None and self._client is not None:
-            try:
-                async with self._client:
-                    await self._client.complete_push_approval(
-                        factor_auth_code=self._factor_auth_code,
-                    )
-
-                cookies: list[dict[str, str]] = []
-                if self._cookie_jar is not None:
-                    cookies = _serialize_cookies(self._cookie_jar)
-                return self.async_update_reload_and_abort(
-                    entry,
-                    data={
-                        **entry.data,
-                        CONF_USERNAME: self._username,
-                        CONF_PASSWORD: self._password,
-                        CONF_DEVICE_ID: self._device_id,
-                        CONF_TRUST_COOKIE: cookies,
-                    },
-                )
-            except AuthenticationError:
-                errors["base"] = "push_timeout"
-
-        return self.async_show_form(
-            step_id="reauth_push",
-            data_schema=vol.Schema({}),
-            errors=errors,
+        cookies: list[dict[str, str]] = []
+        if self._cookie_jar is not None:
+            cookies = _serialize_cookies(self._cookie_jar)
+        return self.async_update_reload_and_abort(
+            entry,
+            data={
+                **entry.data,
+                CONF_USERNAME: self._username,
+                CONF_PASSWORD: self._password,
+                CONF_DEVICE_ID: self._device_id,
+                CONF_TRUST_COOKIE: cookies,
+            },
         )
 
     @staticmethod

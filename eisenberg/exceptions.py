@@ -34,6 +34,10 @@ class SessionExpiredError(AuthenticationError):
     """Token expired, re-auth needed."""
 
 
+class RateLimitedError(EisenbergError):
+    """Arlo is rate-limiting requests. Back off and retry later."""
+
+
 class APIError(EisenbergError):
     """Arlo API returned an error response."""
 

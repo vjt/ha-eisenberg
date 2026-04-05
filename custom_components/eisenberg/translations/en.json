@@ -9,10 +9,6 @@
           "password": "Password"
         }
       },
-      "push_approval": {
-        "title": "Push Approval",
-        "description": "A push notification has been sent to your phone. Approve it in the Arlo app, then click Submit."
-      },
       "media_storage": {
         "title": "Media Storage",
         "description": "Choose where to save motion clips and snapshots. Select 'Disabled' for no archival.",
@@ -21,13 +17,18 @@
         }
       }
     },
+    "progress": {
+      "push_approval": "A push notification has been sent to your phone. Approve it in the Arlo app..."
+    },
     "error": {
       "invalid_auth": "Invalid email or password.",
       "push_timeout": "Push approval timed out. Try again.",
+      "rate_limited": "Arlo is rate-limiting requests. Wait a few hours and try again.",
       "cannot_connect": "Cannot connect to Arlo servers."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This account is already configured.",
+      "rate_limited": "Arlo is rate-limiting requests. Wait a few hours and try again."
     }
   },
   "options": {

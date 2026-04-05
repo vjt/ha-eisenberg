@@ -25,6 +25,7 @@ from .exceptions import (
     APIError,
     AuthenticationError,
     PushApprovalRequired,
+    RateLimitedError,
 )
 from .models import DeviceInfo, StreamResponse
 
@@ -166,6 +167,10 @@ class EisenbergClient:
         ) as resp:
             body = await resp.json()
 
+        if body["meta"].get("message") == "Too many requests":
+            raise RateLimitedError(
+                "Arlo is rate-limiting requests. Wait a few hours and try again."
+            )
         if body["meta"]["code"] != 200:
             raise AuthenticationError(f"Auth failed: {body['meta'].get('error', 'unknown')}")
 
@@ -263,8 +268,15 @@ class EisenbergClient:
             ) as resp:
                 body = await resp.json()
 
-            _LOGGER.debug("finishAuth: code=%s", body["meta"]["code"])
-            if body["meta"]["code"] == 200 and body["data"].get("authCompleted"):
+            meta = body["meta"]
+            _LOGGER.debug("finishAuth: code=%s", meta["code"])
+
+            if meta.get("message") == "Too many requests":
+                raise RateLimitedError(
+                    "Arlo is rate-limiting requests. Wait a few hours and try again."
+                )
+
+            if meta["code"] == 200 and body["data"].get("authCompleted"):
                 finish_data = body["data"]
                 self.token = finish_data["token"]
                 self._token_issued_at = time.monotonic()
