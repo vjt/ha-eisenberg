@@ -51,7 +51,7 @@ class MotionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.MOTION
     _attr_name = "Motion"
-    _attr_is_on: bool | None = None
+    _attr_is_on: bool | None = False
 
     def __init__(
         self,

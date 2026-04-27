@@ -143,14 +143,15 @@ class EisenbergClient:
         return headers
 
     async def login(self) -> None:
-        """Full auth flow. Sets self.token, self.user_id, self.mqtt_url.
+        """Silent login. Sets self.token, self.user_id, self.mqtt_url.
 
-        Raises PushApprovalRequired if this is the first login and the
-        browser trust cookie is missing. The caller (config flow) should
-        show a UI step asking the user to approve the push, then call
-        complete_push_approval().
+        NEVER fires a push. If the browser trust cookie is missing/expired,
+        raises PushApprovalRequired without any user-visible side effects.
+        The caller (config flow) is then responsible for explicitly calling
+        start_push_login() to trigger the push.
 
         Raises AuthenticationError on bad credentials.
+        Raises RateLimitedError if Arlo is rate-limiting requests.
         """
         password_b64 = base64.b64encode(self._password.encode()).decode()
 
@@ -223,76 +224,85 @@ class EisenbergClient:
             await self._establish_session()
             return
 
-        # Browser not trusted — first-time flow, need push approval
-        _LOGGER.info("Browser not trusted, initiating push approval")
+        # Browser not trusted — DO NOT fire push here. Stash the auth token
+        # so start_push_login() can use it, then signal the caller.
+        _LOGGER.info("Browser not trusted — caller must trigger push explicitly")
+        self.token = token
+        raise PushApprovalRequired()
+
+    async def start_push_login(self) -> str:
+        """Fire the push notification. Returns factorAuthCode for finishAuth.
+
+        Call this only after login() raised PushApprovalRequired AND the
+        user has explicitly requested re-authentication. Each call sends a
+        push to the user's phone.
+
+        Requires self.token (set by login()) and self.user_id.
+        """
+        if self.token is None or self.user_id is None:
+            raise AuthenticationError("start_push_login called before login()")
+
+        _LOGGER.info("Sending push approval request")
         async with self.session.post(
             f"{OCAPI_BASE}/api/startAuth",
-            headers=self._ocapi_headers(token),
+            headers=self._ocapi_headers(self.token),
             json={"factorType": "", "userId": self.user_id},
         ) as resp:
             body = await resp.json()
 
+        if body["meta"].get("message") == "Too many requests":
+            raise RateLimitedError(
+                "Arlo is rate-limiting requests. Wait a few hours and try again."
+            )
         if body["meta"]["code"] != 200:
             raise AuthenticationError(f"startAuth failed: {body['meta'].get('error')}")
 
-        start_data = body["data"]
-        # Store token for use in complete_push_approval
-        self.token = token
-        raise PushApprovalRequired(
-            factor_auth_code=start_data["factorAuthCode"],
-            factors=start_data["factors"],
-        )
+        return body["data"]["factorAuthCode"]
 
-    async def complete_push_approval(
-        self,
-        factor_auth_code: str,
-        timeout: int = 120,
-        poll_interval: int = 3,
-    ) -> None:
-        """Poll finishAuth until user approves push, then establish trust.
+    async def try_finish_auth(self, factor_auth_code: str) -> bool:
+        """Single finishAuth call. Returns True if approved, False if pending.
 
-        Called after login() raises PushApprovalRequired.
+        Each call increments Arlo's rate-limit counter — never call in a loop.
+        Caller (UI) drives retries: user clicks "Submit" after approving push.
+
+        Raises RateLimitedError on "Too many requests".
+        Raises AuthenticationError if push expired or any other auth failure.
         """
-        import asyncio
+        async with self.session.post(
+            f"{OCAPI_BASE}/api/finishAuth",
+            headers=self._ocapi_headers(self.token),
+            json={
+                "factorAuthCode": factor_auth_code,
+                "isBrowserTrusted": True,
+            },
+        ) as resp:
+            body = await resp.json()
 
-        _LOGGER.info("Polling finishAuth for push approval")
-        elapsed = 0
-        while elapsed < timeout:
-            async with self.session.post(
-                f"{OCAPI_BASE}/api/finishAuth",
-                headers=self._ocapi_headers(self.token),
-                json={
-                    "factorAuthCode": factor_auth_code,
-                    "isBrowserTrusted": True,
-                },
-            ) as resp:
-                body = await resp.json()
+        meta = body["meta"]
+        msg = meta.get("message", "")
+        _LOGGER.info("finishAuth: code=%s msg=%s", meta["code"], msg)
 
-            meta = body["meta"]
-            _LOGGER.info("finishAuth: code=%s msg=%s", meta["code"], meta.get("message"))
+        if msg == "Too many requests":
+            raise RateLimitedError(
+                "Arlo is rate-limiting requests. Wait a few hours and try again."
+            )
 
-            if meta.get("message") == "Too many requests":
-                raise RateLimitedError(
-                    "Arlo is rate-limiting requests. Wait a few hours and try again."
-                )
+        if meta["code"] == 200 and body["data"].get("authCompleted"):
+            finish_data = body["data"]
+            self.token = finish_data["token"]
+            self._token_issued_at = time.monotonic()
 
-            if meta["code"] == 200 and body["data"].get("authCompleted"):
-                finish_data = body["data"]
-                self.token = finish_data["token"]
-                self._token_issued_at = time.monotonic()
+            browser_auth_code = finish_data.get("browserAuthCode")
+            if browser_auth_code:
+                await self._pair_browser(browser_auth_code)
 
-                # Trust this browser
-                browser_auth_code = finish_data.get("browserAuthCode")
-                if browser_auth_code:
-                    await self._pair_browser(browser_auth_code)
+            await self._establish_session()
+            return True
 
-                await self._establish_session()
-                return
+        if msg == "Authentication is not finished yet":
+            return False
 
-            elapsed += poll_interval
-            await asyncio.sleep(poll_interval)
-
-        raise AuthenticationError(f"Push approval not received within {timeout}s")
+        raise AuthenticationError(f"finishAuth failed: {msg or meta.get('code')}")
 
     async def _pair_browser(self, browser_auth_code: str) -> None:
         """Register this browser as trusted (sets 14-day cookie)."""
@@ -360,6 +370,31 @@ class EisenbergClient:
             self._x_cloud_id = devices[0].x_cloud_id
 
         return devices
+
+    async def request_active_mode(self, device_id: str) -> None:
+        """Request current active mode (armAway/armHome/standby). Response via MQTT."""
+        if self.token is None:
+            raise RuntimeError("Not authenticated")
+
+        async with self.session.post(
+            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
+            headers=self._myapi_headers(self.token),
+            json={
+                "from": f"{self.user_id}_web",
+                "to": device_id,
+                "action": "get",
+                "resource": "automation/activeMode",
+                "publishResponse": True,
+                "transId": f"web!modes!{int(time.time())}",
+            },
+        ) as resp:
+            body = await resp.json()
+
+        if not body.get("success"):
+            raise APIError(
+                code=body.get("data", {}).get("error", "unknown"),
+                message="Active mode request failed",
+            )
 
     async def request_snapshot(self, device_id: str) -> None:
         """Request a full-frame snapshot. Response comes via MQTT."""

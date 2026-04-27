@@ -88,9 +88,9 @@ class TestTrustedBrowserFlow:
 
 
 class TestFirstTimeFlow:
-    async def test_raises_push_approval_required(self) -> None:
+    async def test_login_does_not_fire_push(self) -> None:
+        """login() must signal trust expiry without firing startAuth."""
         with aioresponses() as m:
-            # Step 1: auth
             m.post(
                 f"{OCAPI}/api/auth",
                 payload={
@@ -102,7 +102,6 @@ class TestFirstTimeFlow:
                     "meta": {"code": 200},
                 },
             )
-            # Step 2: getFactorId FAILS (not trusted)
             m.post(
                 f"{OCAPI}/api/getFactorId",
                 payload={
@@ -110,15 +109,44 @@ class TestFirstTimeFlow:
                     "meta": {"code": 400, "error": "4012"},
                 },
             )
-            # Step 3: startAuth returns factors
+
+            client = make_client()
+            async with client:
+                with pytest.raises(PushApprovalRequired):
+                    await client.login()
+
+                # Token was stashed for start_push_login() use
+                assert client.token == "initial-token"
+                assert client.user_id == "USER-123"
+
+            # Crucially: no startAuth call was made
+            requests = [k for k, _ in m.requests]
+            assert all("/api/startAuth" not in str(req) for req in requests)
+
+    async def test_start_push_login_returns_factor_auth_code(self) -> None:
+        """start_push_login() fires startAuth and returns factorAuthCode."""
+        with aioresponses() as m:
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                    },
+                    "meta": {"code": 200},
+                },
+            )
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+            )
             m.post(
                 f"{OCAPI}/api/startAuth",
                 payload={
                     "data": {
                         "factorAuthCode": "auth-code-xyz",
-                        "factors": [
-                            {"factorType": "PUSH", "displayName": "iPhone"},
-                        ],
+                        "factors": [{"factorType": "PUSH", "displayName": "iPhone"}],
                         "MFA_Config": {"timeout": {"PUSH": 120}},
                     },
                     "meta": {"code": 200},
@@ -127,11 +155,11 @@ class TestFirstTimeFlow:
 
             client = make_client()
             async with client:
-                with pytest.raises(PushApprovalRequired) as exc_info:
+                with pytest.raises(PushApprovalRequired):
                     await client.login()
 
-                assert exc_info.value.factor_auth_code == "auth-code-xyz"
-                assert len(exc_info.value.factors) == 1
+                code = await client.start_push_login()
+                assert code == "auth-code-xyz"
 
 
 class TestAuthFailure:

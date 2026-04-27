@@ -101,22 +101,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return Path(path_str) / "eisenberg"
 
-    async def _login_with_push(self) -> None:
-        """Login, handling push approval if needed.
+    async def _login_silent(self) -> None:
+        """Login using trust cookie. Any auth failure → ConfigEntryAuthFailed.
 
-        If the trust cookie is missing/expired, Arlo requires a push
-        approval. We poll finishAuth for up to 120s. After success,
-        we persist the new trust cookie to the config entry.
+        Coordinator NEVER triggers push at startup — push approval is
+        user-driven via the reauth flow. Each finishAuth call costs a
+        rate-limit token; an unattended retry loop can lock the user out.
         """
-        try:
-            await self.client.login()
-        except PushApprovalRequired as err:
-            _LOGGER.info("Push approval required — polling finishAuth")
-            await self.client.complete_push_approval(
-                factor_auth_code=err.factor_auth_code,
-                timeout=120,
-            )
-        # After any successful login, persist cookies for next restart
+        await self.client.login()
         await self._save_cookies()
 
     async def _save_cookies(self) -> None:
@@ -127,12 +119,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cookies: list[dict[str, str]] = []
         for morsel in cookie_jar:
             if morsel.key.startswith("browser_trust_"):
-                cookies.append({
-                    "name": morsel.key,
-                    "value": morsel.value,
-                    "domain": morsel["domain"],
-                    "path": morsel["path"],
-                })
+                cookies.append(
+                    {
+                        "name": morsel.key,
+                        "value": morsel.value,
+                        "domain": morsel["domain"],
+                        "path": morsel["path"],
+                    }
+                )
         if cookies:
             new_data = {**self.entry.data, CONF_TRUST_COOKIE: cookies}
             self.hass.config_entries.async_update_entry(self.entry, data=new_data)
@@ -171,7 +165,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client.set_http_session(self._http_session)
 
         try:
-            await self._login_with_push()
+            await self._login_silent()
+        except PushApprovalRequired as err:
+            raise ConfigEntryAuthFailed(
+                "Trust cookie expired — re-approve push to continue"
+            ) from err
         except (AuthenticationError, RateLimitedError) as err:
             raise ConfigEntryAuthFailed(str(err)) from err
 
@@ -196,6 +194,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
             except Exception:
                 _LOGGER.debug("Could not request snapshot for %s", device.device_id)
+
+        # Request current active mode (response arrives via MQTT)
+        if self._devices:
+            try:
+                await self.client.request_active_mode(self._devices[0].device_id)
+                _LOGGER.debug("Requested initial active mode")
+            except Exception:
+                _LOGGER.debug("Could not request initial active mode")
 
     def _register_mqtt_handlers(self) -> None:
         """Register MQTT topic handlers."""
@@ -460,7 +466,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.client.token_needs_refresh():
             _LOGGER.info("Refreshing auth token")
             try:
-                await self._login_with_push()
+                await self._login_silent()
+            except PushApprovalRequired as err:
+                raise ConfigEntryAuthFailed(
+                    "Trust cookie expired — re-approve push to continue"
+                ) from err
             except (AuthenticationError, RateLimitedError) as err:
                 raise ConfigEntryAuthFailed(str(err)) from err
 

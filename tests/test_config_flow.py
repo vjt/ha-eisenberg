@@ -28,17 +28,11 @@ class TestConfigFlowLogic:
         # No PushApprovalRequired raised = success
 
     async def test_first_time_login_requires_push(self) -> None:
-        """When login raises PushApprovalRequired, need push step."""
+        """When login raises PushApprovalRequired, caller must trigger push."""
         client = AsyncMock()
-        client.login = AsyncMock(
-            side_effect=PushApprovalRequired(
-                factor_auth_code="code-123",
-                factors=[{"factorType": "PUSH", "displayName": "Phone"}],
-            )
-        )
-        with pytest.raises(PushApprovalRequired) as exc_info:
+        client.login = AsyncMock(side_effect=PushApprovalRequired())
+        with pytest.raises(PushApprovalRequired):
             await client.login()
-        assert exc_info.value.factor_auth_code == "code-123"
 
     async def test_bad_credentials_raises_auth_error(self) -> None:
         """When credentials are wrong, raises AuthenticationError."""

@@ -20,15 +20,10 @@ def test_authentication_error_has_message() -> None:
     assert isinstance(err, EisenbergError)
 
 
-def test_push_approval_required_carries_factors() -> None:
-    factors = [{"factorType": "PUSH", "displayName": "Phone"}]
-    err = PushApprovalRequired(
-        factor_auth_code="abc123",
-        factors=factors,
-    )
-    assert err.factor_auth_code == "abc123"
-    assert err.factors == factors
+def test_push_approval_required_is_marker() -> None:
+    err = PushApprovalRequired()
     assert isinstance(err, AuthenticationError)
+    assert "Push approval" in str(err)
 
 
 def test_session_expired_is_auth_error() -> None:

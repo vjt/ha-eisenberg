@@ -6,8 +6,6 @@ so callers can catch broadly or narrowly.
 
 from __future__ import annotations
 
-from typing import Any
-
 
 class EisenbergError(Exception):
     """Base exception for all eisenberg errors."""
@@ -18,15 +16,14 @@ class AuthenticationError(EisenbergError):
 
 
 class PushApprovalRequired(AuthenticationError):  # noqa: N818
-    """2FA push approval needed. Carries factor info for the UI to display."""
+    """Browser trust expired — caller must explicitly trigger push.
 
-    def __init__(
-        self,
-        factor_auth_code: str,
-        factors: list[dict[str, Any]],
-    ) -> None:
-        self.factor_auth_code = factor_auth_code
-        self.factors = factors
+    Marker exception. No push has been sent yet. Caller (config flow)
+    must explicitly call start_push_login() to fire the push, then
+    try_finish_auth() once the user approves on their phone.
+    """
+
+    def __init__(self) -> None:
         super().__init__("Push approval required")
 
 

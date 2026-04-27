@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 dist/
+.claude/*
+!.claude/skills
 session.json
 cookies.json
 *.jpg

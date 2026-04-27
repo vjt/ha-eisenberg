@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
@@ -82,10 +82,9 @@ class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity
 
     _attr_has_entity_name = True
     _attr_name = "Signal strength"
-    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
-    _attr_entity_registry_enabled_default = False
+    _attr_native_unit_of_measurement = "bars"
+    _attr_icon = "mdi:wifi"
     _attr_native_value: StateType | date | datetime | Decimal = None
 
     def __init__(
@@ -99,6 +98,11 @@ class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity
         self._attr_device_info = {
             "identifiers": {("eisenberg", device.device_id)},
         }
+        # Seed from initial device info — MQTT camera state rarely includes signalStrength
+        props = device.properties or {}
+        signal = props.get("signalStrength")
+        if isinstance(signal, int):
+            self._attr_native_value = signal
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -113,7 +117,7 @@ class ModeSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
     """Arlo security mode sensor (Armed Away / Armed Home / Standby)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Mode"
+    _attr_name = "Security mode"
     _attr_icon = "mdi:shield-home"
     _attr_native_value: StateType | date | datetime | Decimal = None
 
