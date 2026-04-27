@@ -44,7 +44,9 @@ from eisenberg.models import (
 from .const import (
     CONF_DEVICE_ID,
     CONF_MEDIA_DIR,
+    CONF_MEDIA_RETENTION_DAYS,
     CONF_TRUST_COOKIE,
+    DEFAULT_MEDIA_RETENTION_DAYS,
     DOMAIN,
     EVENT_MEDIA,
 )
@@ -162,15 +164,21 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.image_bytes[device_id] = data
             _LOGGER.info("Seeded %d bytes from archive for %s", len(data), device_id)
 
-    async def _prune_old_media(self, max_age_days: int = 14) -> None:
+    async def _prune_old_media(self, max_age_days: int | None = None) -> None:
         """Delete archived media older than max_age_days. Best-effort."""
         media_path = self.media_path
         if media_path is None:
             return
 
+        days: int = (
+            max_age_days
+            if max_age_days is not None
+            else self.entry.options.get(CONF_MEDIA_RETENTION_DAYS, DEFAULT_MEDIA_RETENTION_DAYS)
+        )
+
         from datetime import UTC, datetime, timedelta
 
-        cutoff = (datetime.now(UTC) - timedelta(days=max_age_days)).timestamp()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).timestamp()
 
         def _prune() -> int:
             if not media_path.exists():
@@ -194,7 +202,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         removed = await self.hass.async_add_executor_job(_prune)
         if removed:
-            _LOGGER.info("Pruned %d archived files older than %d days", removed, max_age_days)
+            _LOGGER.info("Pruned %d archived files older than %d days", removed, days)
 
     async def archive_bytes(self, device_id: str, content: bytes, media_type: str) -> None:
         """Archive raw image bytes (e.g. a stream-extracted frame) to disk.
@@ -258,10 +266,24 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         revision the server returns. MQTT will publish the change shortly
         after, but we update self.active_mode optimistically so the UI
         reflects the request immediately.
+
+        On any failure (typically a stale revision after another client
+        changed the mode), refetch the live revision from the server and
+        retry once. Beyond that, surface the original error.
         """
         if self.location_id is None:
             raise RuntimeError("location_id not initialised — cannot set mode")
-        result = await self.client.set_active_mode(self.location_id, mode, self._mode_revision)
+
+        from eisenberg import APIError
+
+        try:
+            result = await self.client.set_active_mode(self.location_id, mode, self._mode_revision)
+        except APIError:
+            _LOGGER.info("set_active_mode failed, refreshing revision and retrying once")
+            state = await self.client.get_active_mode(self.location_id)
+            self._mode_revision = state.revision or 1
+            result = await self.client.set_active_mode(self.location_id, mode, self._mode_revision)
+
         if result.revision:
             self._mode_revision = result.revision
         if result.properties is not None:
