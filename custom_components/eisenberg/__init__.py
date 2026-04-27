@@ -22,19 +22,24 @@ class _ArloStreamRetryFilter(logging.Filter):
 
     HA's stream component caches the Stream object and its source URL,
     then retries the connection on its keepalive loop. Arlo's RTSPS URL
-    embeds a one-shot egress token, so the retry always fails with
-    "Invalid data found when processing input". The error is harmless —
-    a fresh UI open builds a new stream from a new URL — but it spams
-    the log. Pattern-match tightly so unrelated stream errors still log.
+    embeds a one-shot egress token, so any retry against it fails — the
+    underlying ffmpeg surfaces variants like "Invalid data found when
+    processing input" or "Error demuxing stream while finding first
+    packet (I/O error)". Match on the URL signature instead of the error
+    text so all variants are silenced while unrelated stream errors
+    (different cameras, different protocols) keep their voice.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno < logging.ERROR:
+            return True
+        if not record.name.startswith("homeassistant.components.stream"):
+            return True
         msg = record.getMessage()
-        return not (
-            "Invalid data found when processing input" in msg
-            and "rtsps://" in msg
-            and "vzmodulelive" in msg
-        )
+        # Must be (a) the stream-worker retry surface, and (b) hitting
+        # an Arlo / Wowza URL. Genuine errors that match only one half
+        # still log.
+        return not ("Error from stream worker" in msg and "vzmodulelive" in msg)
 
 
 _STREAM_LOGGER_FILTER = _ArloStreamRetryFilter()
@@ -42,7 +47,13 @@ _STREAM_LOGGER_FILTER = _ArloStreamRetryFilter()
 
 async def async_setup_entry(hass: HomeAssistant, entry: EisenbergConfigEntry) -> bool:
     """Set up Eisenberg from a config entry."""
-    logging.getLogger("homeassistant.components.stream").addFilter(_STREAM_LOGGER_FILTER)
+    # Attach the filter to the root logger's handlers — HA's stream
+    # worker logs under per-camera child loggers
+    # (homeassistant.components.stream.stream.camera.<entity>), and
+    # filters set on a parent logger don't run for records that
+    # originated below it. Handler-level filters do.
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_STREAM_LOGGER_FILTER)
 
     coordinator = EisenbergCoordinator(hass, entry)
     await coordinator.async_setup()
@@ -60,6 +71,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: EisenbergConfigEntry) -
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         await entry.runtime_data.async_shutdown()
-        logging.getLogger("homeassistant.components.stream").removeFilter(_STREAM_LOGGER_FILTER)
+        for handler in logging.getLogger().handlers:
+            handler.removeFilter(_STREAM_LOGGER_FILTER)
 
     return unload_ok
