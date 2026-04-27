@@ -41,6 +41,7 @@ from eisenberg.models import (
 
 from .const import (
     CONF_DEVICE_ID,
+    CONF_LAST_ACTIVE_MODE,
     CONF_MEDIA_DIR,
     CONF_TRUST_COOKIE,
     DOMAIN,
@@ -73,10 +74,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._devices: list[DeviceInfo] = []
         self._http_session: aiohttp.ClientSession | None = None
 
-        # Entity state — updated by MQTT handlers
+        # Entity state — updated by MQTT handlers. active_mode is seeded
+        # from the config entry so the security mode sensor isn't "unknown"
+        # at boot; the REST automation/active endpoint can't be used because
+        # it returns the *configured* default modes (with a stale timestamp),
+        # not the live state set via the Arlo app.
         self.device_states: dict[str, DeviceState] = {}
         self.siren_states: dict[str, SirenState] = {}
-        self.active_mode: str | None = None
+        self.active_mode: str | None = entry.data.get(CONF_LAST_ACTIVE_MODE)
         self.latest_snapshots: dict[str, str] = {}  # device_id -> URL
         self.latest_thumbnails: dict[str, str] = {}  # device_id -> URL or path
         self.motion_events: dict[str, MotionEvent] = {}  # device_id -> last event
@@ -110,6 +115,15 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         await self.client.login()
         await self._save_cookies()
+
+    def _set_active_mode(self, mode: str) -> None:
+        """Update active mode and persist to config entry for next boot."""
+        self.active_mode = mode
+        if self.entry.data.get(CONF_LAST_ACTIVE_MODE) != mode:
+            self.hass.config_entries.async_update_entry(
+                self.entry,
+                data={**self.entry.data, CONF_LAST_ACTIVE_MODE: mode},
+            )
 
     async def _save_cookies(self) -> None:
         """Persist trust cookies from the session to the config entry."""
@@ -195,13 +209,8 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 _LOGGER.debug("Could not request snapshot for %s", device.device_id)
 
-        # Request current active mode (response arrives via MQTT)
-        if self._devices:
-            try:
-                await self.client.request_active_mode(self._devices[0].device_id)
-                _LOGGER.debug("Requested initial active mode")
-            except Exception:
-                _LOGGER.debug("Could not request initial active mode")
+        if self.active_mode is not None:
+            _LOGGER.info("Restored last active mode: %s", self.active_mode)
 
     def _register_mqtt_handlers(self) -> None:
         """Register MQTT topic handlers."""
@@ -364,7 +373,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif feed_type == "modeChange":
             try:
                 event = ModeChangeEvent.model_validate(payload)
-                self.active_mode = event.active_mode
+                self._set_active_mode(event.active_mode)
                 _LOGGER.debug("Mode change: %s", event.active_mode)
                 self.async_set_updated_data(self.data or {})
             except Exception:
@@ -399,7 +408,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         properties = payload.get("properties", {})
         try:
             mode = ActiveMode.model_validate(properties)
-            self.active_mode = mode.properties.mode
+            self._set_active_mode(mode.properties.mode)
             _LOGGER.debug("Active mode: %s", self.active_mode)
             self.async_set_updated_data(self.data or {})
         except Exception:

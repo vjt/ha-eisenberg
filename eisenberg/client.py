@@ -371,31 +371,6 @@ class EisenbergClient:
 
         return devices
 
-    async def request_active_mode(self, device_id: str) -> None:
-        """Request current active mode (armAway/armHome/standby). Response via MQTT."""
-        if self.token is None:
-            raise RuntimeError("Not authenticated")
-
-        async with self.session.post(
-            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
-            headers=self._myapi_headers(self.token),
-            json={
-                "from": f"{self.user_id}_web",
-                "to": device_id,
-                "action": "get",
-                "resource": "automation/activeMode",
-                "publishResponse": True,
-                "transId": f"web!modes!{int(time.time())}",
-            },
-        ) as resp:
-            body = await resp.json()
-
-        if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Active mode request failed",
-            )
-
     async def request_snapshot(self, device_id: str) -> None:
         """Request a full-frame snapshot. Response comes via MQTT."""
         if self.token is None:

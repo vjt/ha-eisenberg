@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import aiohttp
-from homeassistant.components.camera import Camera
+from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -33,6 +33,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
 
     _attr_has_entity_name = True
     _attr_name = None  # Use device name
+    _attr_supported_features = CameraEntityFeature.STREAM
     _attr_is_streaming: bool = False
     _attr_motion_detection_enabled: bool = True
 
@@ -75,13 +76,19 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         return None
 
     async def stream_source(self) -> str | None:
-        """Return the RTSP stream source URL."""
+        """Return the RTSP stream source URL.
+
+        Arlo serves the stream on port 443 with TLS but advertises it as
+        plain rtsp://; ffmpeg fails to read the bytes because they're
+        actually TLS-wrapped. Rewrite the scheme to rtsps:// (matches
+        pyaarlo's behaviour) so HA's stream worker negotiates TLS.
+        """
         try:
             resp = await self.coordinator.client.start_stream(self._device.device_id)
-            return resp.url
         except Exception:
             _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
             return None
+        return resp.url.replace("rtsp://", "rtsps://", 1)
 
     @callback
     def _handle_coordinator_update(self) -> None:

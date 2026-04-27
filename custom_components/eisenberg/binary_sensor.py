@@ -67,9 +67,14 @@ class MotionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Update is_on from coordinator state."""
+        """Update is_on from coordinator state.
+
+        Only overwrite when MQTT actually reported a motion value — most
+        camera state updates (snapshots, mode changes) do not include
+        motionDetected and would otherwise reset the sensor to unknown.
+        """
         state = self.coordinator.device_states.get(self._device.device_id)
-        if state is not None:
+        if state is not None and state.motion_detected is not None:
             self._attr_is_on = state.motion_detected
         self.async_write_ha_state()
 
