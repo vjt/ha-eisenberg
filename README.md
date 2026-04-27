@@ -1,8 +1,14 @@
 # Eisenberg — Arlo for Home Assistant
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/v/release/vjt/ha-eisenberg?include_prereleases&sort=semver)](https://github.com/vjt/ha-eisenberg/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Home Assistant custom integration for Arlo cameras, named after
 skating legend Arlo Eisenberg. Built around event-driven MQTT (no
 polling) with a typed Pydantic API client.
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=vjt&repository=ha-eisenberg&category=integration)
 
 ## What you get
 
@@ -28,10 +34,18 @@ polling) with a typed Pydantic API client.
 
 ### HACS (recommended)
 
-1. Add this repo as a custom repository in HACS (category: Integration).
-2. Install **Eisenberg**.
+The fastest path: click the **Open in HACS** badge above. It opens your
+HA instance's HACS UI prepared to add this repo as a custom integration
+— review and confirm.
+
+Manual HACS path:
+
+1. HACS → Integrations → ⋮ → **Custom repositories** → add
+   `https://github.com/vjt/ha-eisenberg` with category **Integration**.
+2. Install **Eisenberg (Arlo)**.
 3. Restart Home Assistant.
-4. Settings → Devices & Services → Add Integration → search "Eisenberg".
+4. Settings → Devices & Services → **Add Integration** → search
+   "Eisenberg".
 
 ### Manual
 
