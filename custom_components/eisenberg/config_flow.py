@@ -29,8 +29,10 @@ from .const import (
     CONF_DETECTION_TIMEOUT,
     CONF_DEVICE_ID,
     CONF_MEDIA_DIR,
+    CONF_MEDIA_RETENTION_DAYS,
     CONF_TRUST_COOKIE,
     DEFAULT_DETECTION_TIMEOUT,
+    DEFAULT_MEDIA_RETENTION_DAYS,
     DOMAIN,
 )
 
@@ -193,6 +195,7 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                 options={
                     CONF_MEDIA_DIR: media_dir if media_dir != MEDIA_DIR_DISABLED else "",
                     CONF_DETECTION_TIMEOUT: DEFAULT_DETECTION_TIMEOUT,
+                    CONF_MEDIA_RETENTION_DAYS: DEFAULT_MEDIA_RETENTION_DAYS,
                 },
             )
 
@@ -406,6 +409,13 @@ class EisenbergOptionsFlow(OptionsFlow):
                             DEFAULT_DETECTION_TIMEOUT,
                         ),
                     ): vol.All(int, vol.Range(min=5, max=300)),
+                    vol.Required(
+                        CONF_MEDIA_RETENTION_DAYS,
+                        default=opts.get(
+                            CONF_MEDIA_RETENTION_DAYS,
+                            DEFAULT_MEDIA_RETENTION_DAYS,
+                        ),
+                    ): vol.All(int, vol.Range(min=1, max=365)),
                 }
             ),
         )
