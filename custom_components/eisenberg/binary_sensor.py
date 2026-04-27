@@ -41,6 +41,7 @@ async def async_setup_entry(
         entities.append(DetectionSensor(coordinator, device, "Person", entry))
         entities.append(DetectionSensor(coordinator, device, "Vehicle", entry))
         entities.append(DetectionSensor(coordinator, device, "Animal", entry))
+        entities.append(BasestationConnectivity(coordinator, device))
 
     async_add_entities(entities)
 
@@ -136,3 +137,31 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
             self.async_write_ha_state()
 
         self._reset_task = self.hass.async_create_task(_reset())
+
+
+class BasestationConnectivity(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
+    """Connectivity binary sensor for the base station / camera gateway."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_name = "Base station connectivity"
+    _attr_is_on: bool | None = None
+
+    def __init__(
+        self,
+        coordinator: EisenbergCoordinator,
+        device: DeviceInfo,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_basestation_connectivity"
+        self._attr_device_info = {
+            "identifiers": {("eisenberg", device.device_id)},
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        state = self.coordinator.basestation_connection.get(self._device.device_id)
+        if state is not None:
+            self._attr_is_on = state == "available"
+        self.async_write_ha_state()

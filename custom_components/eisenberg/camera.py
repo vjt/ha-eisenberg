@@ -148,6 +148,11 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         self.async_write_ha_state()
 
     async def _cache_last_stream_frame(self) -> None:
+        # Don't tear down the Stream — HA reuses it for follow-up clients
+        # (more frame requests, websocket HLS endpoint negotiation), and
+        # forcing self.stream = None would race with those. The trade-off
+        # is the occasional "Invalid data" log when HA's keepalive retries
+        # with an expired Arlo egress token; that's noise, not a fault.
         if self.stream is None:
             return
         try:
@@ -160,3 +165,4 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             _LOGGER.debug(
                 "Cached %d bytes from stream end for %s", len(frame), self._device.device_id
             )
+            await self.coordinator.archive_bytes(self._device.device_id, frame, "stream_thumb")

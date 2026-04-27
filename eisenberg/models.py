@@ -220,6 +220,19 @@ class Connectivity(BaseModel):
     connectivity: list[WifiInfo]
 
 
+class BasestationState(BaseModel):
+    """Properties from MQTT topic d/{xCloudId}/out/basestation/is.
+
+    The base periodically heartbeats with `connectionState: "available"`
+    when reachable. Empty payloads (`properties: {}`) are also valid and
+    indicate ack-only frames.
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    connection_state: str | None = Field(None, alias="connectionState")
+
+
 class StreamResponse(BaseModel):
     """Response from POST /hmsweb/users/devices/startStream."""
 

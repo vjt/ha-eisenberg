@@ -8,6 +8,7 @@ list sync).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import timedelta
@@ -31,6 +32,7 @@ from eisenberg import (
 )
 from eisenberg.models import (
     ActiveMode,
+    BasestationState,
     DeviceState,
     MediaUpload,
     ModeChangeEvent,
@@ -91,6 +93,8 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # possible from the cloud in that state).
         self.image_bytes: dict[str, bytes] = {}
         self.motion_events: dict[str, MotionEvent] = {}  # device_id -> last event
+        # gateway_id -> last connectionState ("available" / "unavailable" / ...)
+        self.basestation_connection: dict[str, str] = {}
 
     @property
     def devices(self) -> list[DeviceInfo]:
@@ -121,6 +125,102 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         await self.client.login()
         await self._save_cookies()
+
+    async def _seed_image_cache_from_disk(self) -> None:
+        """Load the newest archived JPEG per device into image_bytes.
+
+        Lets the dashboard tile survive HA restarts and long disarmed
+        gaps. Scans the media archive (configured during setup) for the
+        most recent `*_thumb.jpg` or `*_snapshot.jpg` matching each
+        device id and loads its bytes synchronously off the executor.
+        """
+        media_path = self.media_path
+        if media_path is None or not self._devices:
+            return
+
+        device_ids = {d.device_id for d in self._devices}
+
+        def _scan() -> dict[str, bytes]:
+            if not media_path.exists():
+                return {}
+            newest: dict[str, tuple[float, Path]] = {}
+            for path in media_path.rglob("*.jpg"):
+                # filename: {ts}_{device_id}_{type}.jpg
+                parts = path.stem.split("_", 2)
+                if len(parts) < 3:
+                    continue
+                device_id = parts[1]
+                if device_id not in device_ids:
+                    continue
+                mtime = path.stat().st_mtime
+                if device_id not in newest or newest[device_id][0] < mtime:
+                    newest[device_id] = (mtime, path)
+            return {dev: file.read_bytes() for dev, (_, file) in newest.items()}
+
+        loaded = await self.hass.async_add_executor_job(_scan)
+        for device_id, data in loaded.items():
+            self.image_bytes[device_id] = data
+            _LOGGER.info("Seeded %d bytes from archive for %s", len(data), device_id)
+
+    async def _prune_old_media(self, max_age_days: int = 14) -> None:
+        """Delete archived media older than max_age_days. Best-effort."""
+        media_path = self.media_path
+        if media_path is None:
+            return
+
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = (datetime.now(UTC) - timedelta(days=max_age_days)).timestamp()
+
+        def _prune() -> int:
+            if not media_path.exists():
+                return 0
+            removed = 0
+            for path in media_path.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                        removed += 1
+                except OSError:
+                    continue
+            # Sweep empty date dirs.
+            for path in sorted(media_path.iterdir(), reverse=True):
+                if path.is_dir() and not any(path.iterdir()):
+                    with contextlib.suppress(OSError):
+                        path.rmdir()
+            return removed
+
+        removed = await self.hass.async_add_executor_job(_prune)
+        if removed:
+            _LOGGER.info("Pruned %d archived files older than %d days", removed, max_age_days)
+
+    async def archive_bytes(self, device_id: str, content: bytes, media_type: str) -> None:
+        """Archive raw image bytes (e.g. a stream-extracted frame) to disk.
+
+        Same naming scheme as _archive_media so the boot-time seed picks
+        these up alongside snapshots and motion thumbnails.
+        """
+        media_path = self.media_path
+        if media_path is None:
+            return
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        date_dir = media_path / now.strftime("%Y-%m-%d")
+        timestamp = int(now.timestamp())
+        filepath = date_dir / f"{timestamp}_{device_id}_{media_type}.jpg"
+
+        def _write() -> None:
+            date_dir.mkdir(parents=True, exist_ok=True)
+            filepath.write_bytes(content)
+
+        try:
+            await self.hass.async_add_executor_job(_write)
+            _LOGGER.debug("Archived %d bytes to %s", len(content), filepath)
+        except OSError:
+            _LOGGER.debug("Failed to archive bytes for %s", device_id, exc_info=True)
 
     async def _cache_image_bytes(self, device_id: str, url: str) -> None:
         """Download an image URL and cache the bytes for the camera entity.
@@ -277,6 +377,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception:
                     _LOGGER.debug("Could not request snapshot for %s", device.device_id)
 
+        # Restore the dashboard tile from the archive and clean up old
+        # files. Both are no-ops when media archival is disabled.
+        await self._seed_image_cache_from_disk()
+        await self._prune_old_media()
+
     def _register_mqtt_handlers(self) -> None:
         """Register MQTT topic handlers."""
         if self._mqtt is None:
@@ -308,6 +413,17 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "d/+/out/basestation/connectivity/is",
             self._handle_connectivity,
         )
+
+        # Base station heartbeat (frequent, includes connectionState)
+        self._mqtt.on("d/+/out/basestation/is", self._handle_basestation)
+
+        # Per-device states broadcast — activeMode mirrors the automation
+        # topic in friendly name form, plus motionStart actions config.
+        self._mqtt.on("d/+/out/devices/+/states/is", self._handle_device_states)
+
+        # Geofence configuration push — informational only, just absorb
+        # the topic so it doesn't show up as Unhandled.
+        self._mqtt.on("u/+/in/automation/geofences/is", self._handle_geofences)
 
         # Reconnect handler
         self._mqtt.on_disconnect(self._handle_mqtt_disconnect)
@@ -495,6 +611,62 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Handle connectivity updates."""
         _LOGGER.debug("Connectivity update: %s", json.dumps(payload)[:200])
 
+    async def _handle_device_states(self, topic: str, payload: dict[str, Any]) -> None:
+        """Per-device state broadcast — currently we only care about activeMode.
+
+        Topic: d/{xCloudId}/out/devices/{deviceId}/states/is. The states
+        block carries the friendly activeMode (armAway/armHome/standby);
+        we mirror it into the location mode tracker so the select entity
+        stays in sync if a different client changes it.
+        """
+        states = payload.get("states")
+        if not isinstance(states, dict):
+            return
+        try:
+            active_mode = states["activeMode"]  # pyright: ignore[reportUnknownVariableType]
+        except (KeyError, TypeError):
+            return
+        if isinstance(active_mode, str):
+            self._set_active_mode(active_mode)
+            self.async_set_updated_data(self.data or {})
+
+    async def _handle_geofences(self, topic: str, payload: dict[str, Any]) -> None:
+        """Geofence config push from the Arlo app — informational only."""
+        _LOGGER.debug("Geofence update on %s", topic)
+
+    async def _handle_basestation(self, topic: str, payload: dict[str, Any]) -> None:
+        """Handle base station heartbeat / state.
+
+        Topic shape: d/{xCloudId}/out/basestation/is. The `from` field
+        identifies the gateway. Empty payloads are ack frames; ones with
+        `properties.connectionState` carry the link state we surface as a
+        binary sensor.
+        """
+        gateway_id = payload.get("from")
+        if not isinstance(gateway_id, str):
+            return
+        properties: Any = payload.get("properties") or {}
+        try:
+            state = BasestationState.model_validate(properties)
+        except Exception:
+            _LOGGER.warning(
+                "Failed to parse basestation state: %s",
+                json.dumps(payload)[:300],
+            )
+            return
+        if state.connection_state is None:
+            # ack-only frame; nothing to report
+            return
+        prev = self.basestation_connection.get(gateway_id)
+        self.basestation_connection[gateway_id] = state.connection_state
+        if prev != state.connection_state:
+            _LOGGER.info(
+                "Base station %s connectionState: %s",
+                gateway_id,
+                state.connection_state,
+            )
+        self.async_set_updated_data(self.data or {})
+
     async def _handle_mqtt_disconnect(self) -> None:
         """Handle MQTT disconnect — attempt reconnect."""
         _LOGGER.warning("MQTT disconnected, will reconnect on next refresh")
@@ -523,7 +695,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.hass.async_add_executor_job(_ensure_dir)
 
         timestamp = int(now.timestamp())
-        filename = f"{timestamp}_{media_type}.{ext}"
+        filename = f"{timestamp}_{device_id}_{media_type}.{ext}"
         filepath = date_dir / filename
 
         try:
@@ -556,6 +728,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ) from err
             except (AuthenticationError, RateLimitedError) as err:
                 raise ConfigEntryAuthFailed(str(err)) from err
+
+        # Prune old archived media on every health tick (cheap when empty).
+        await self._prune_old_media()
 
         # MQTT reconnect
         if self._mqtt is None and self.client.mqtt_url:
