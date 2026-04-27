@@ -103,6 +103,43 @@ log clips elsewhere or trigger downstream actions.
   coordinator owns the client + MQTT stream and pushes state to
   entities via `_handle_coordinator_update`.
 
+## Why another Arlo integration?
+
+The existing reference is [pyaarlo](https://github.com/twrecked/pyaarlo)
+and the HA integration that wraps it. It works, it's been kept alive
+heroically, and we owe it the protocol reverse-engineering this client
+stands on. But it carries years of accreted workarounds for problems
+Arlo has since stopped having:
+
+- **No Cloudflare bypass.** pyaarlo ships `cloudscraper` because the
+  old Arlo endpoints were behind a JS challenge. The current
+  `ocapi-app.arlo.com` / `myapi.arlo.com` endpoints accept plain
+  aiohttp with normal browser headers — the same flow `my.arlo.com`
+  uses.
+- **No User-Agent spoofing tricks.** We use a vanilla Chrome UA for
+  REST and a mobile UA only where Arlo gates RTSP on it (the
+  `startStream` endpoint returns DASH for browsers, RTSP for the
+  mobile app). Two distinct paths, both documented.
+- **No 2FA email polling, no IMAP scraping.** Auth is driven by the
+  same browser-trust cookie flow Arlo's own web app uses: one push to
+  your phone, one click in HA, then a 14-day trusted-browser cookie.
+  No polling, no inbox access, no rate-limit risk from background
+  retries.
+- **No sync-over-thread-pool fake async.** The whole client is native
+  `aiohttp` + `asyncio`. MQTT 3.1.1 is implemented from scratch over
+  the existing aiohttp WebSocket session — no `paho-mqtt`, no second
+  TCP stack to keep alive.
+- **Typed at the boundary.** Every Arlo API/MQTT payload lands in a
+  Pydantic model. Unknown shapes log loudly instead of silently
+  succeeding — that's how new MQTT topics surfaced during development.
+
+This is a smaller surface (single hardware family, web-auth flow only),
+not a drop-in pyaarlo replacement. If you need basestation hubs,
+locally-stored video, IMAP 2FA fallback, or any of pyaarlo's broader
+device matrix — stay there. If you have a recent battery/solar Arlo
+and want a small, typed, event-driven integration you can read end to
+end, this is for you.
+
 ## Camera support
 
 Tested against the **Arlo Essential XL HD (VMC2052A)** (battery + solar,
