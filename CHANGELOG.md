@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.3 — 2026-04-28
+
+### Fixed
+
+- Token-refresh threshold tightened from 90 min to 60 min. Arlo tokens
+  live ~2 h; the coordinator polls every 30 min, and the previous 90
+  min margin could land a refresh at +120 min in the worst-case
+  alignment — exactly at token expiry. 60 min guarantees ≥30 min of
+  headroom in any alignment.
+
 ## 0.1.2 — 2026-04-28
 
 Hygiene release.

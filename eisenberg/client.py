@@ -340,11 +340,17 @@ class EisenbergClient:
         self.mqtt_url = body["data"].get("mqttUrl", "")
 
     def token_needs_refresh(self) -> bool:
-        """Check if token is close to expiry (~2hr lifetime, refresh at 90min)."""
+        """Check if token is close to expiry.
+
+        Arlo tokens live ~2 h. The HA coordinator polls this every 30 min,
+        so refreshing at 60 min gives 30 min of headroom against the
+        worst-case alignment (login fires just after a poll tick → next
+        check at +30, refresh at +60-90, token still has ≥30 min left).
+        """
         if self.token is None:
             return True
         elapsed = time.monotonic() - self._token_issued_at
-        return elapsed > 5400  # 90 minutes
+        return elapsed > 3600  # 60 minutes
 
     async def get_devices(self) -> list[DeviceInfo]:
         """Fetch all devices. Sets x_cloud_id from first camera found."""
