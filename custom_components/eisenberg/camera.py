@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 import aiohttp
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -36,6 +37,19 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
     _attr_supported_features = CameraEntityFeature.STREAM
     _attr_is_streaming: bool = False
     _attr_motion_detection_enabled: bool = True
+    # Arlo's stream is RTSP-over-TLS on port 443; ffmpeg's default UDP
+    # transport can't traverse TLS so it reads garbage and fails with
+    # "Invalid data found when processing input". Force TCP. The other
+    # flags shave seconds off the HLS pipeline lag — fflags=nobuffer
+    # disables ffmpeg's input buffer, flags=low_delay tells decoders not
+    # to look ahead, and use_wallclock_as_timestamps stops the worker
+    # from re-sequencing PTS (Arlo/Wowza sometimes ships drifty stamps).
+    _attr_stream_options: ClassVar[dict[str, str | bool | float]] = {
+        "rtsp_transport": "tcp",
+        "fflags": "nobuffer",
+        "flags": "low_delay",
+        "use_wallclock_as_timestamps": True,
+    }
 
     def __init__(
         self,
@@ -57,11 +71,32 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return the latest camera image."""
-        # Try latest thumbnail from motion event first
+        """Return the latest camera image.
+
+        Preference order:
+        1. A live keyframe from HA's stream worker if a stream object
+           still exists — this gives a fresh image while or just after
+           live view, and is the only way to refresh the tile while the
+           camera is disarmed (Arlo refuses on-demand snapshots then).
+        2. Bytes cached by the coordinator from MQTT-delivered URLs.
+        3. Refetch from the most recent snapshot/thumbnail URL.
+        """
+        if self.stream is not None:
+            try:
+                frame = await self.stream.async_get_image(width=width, height=height)
+            except Exception:
+                _LOGGER.debug("Stream keyframe extraction failed", exc_info=True)
+                frame = None
+            if frame:
+                self.coordinator.image_bytes[self._device.device_id] = frame
+                return frame
+
+        cached = self.coordinator.image_bytes.get(self._device.device_id)
+        if cached is not None:
+            return cached
+
         url = self.coordinator.latest_thumbnails.get(self._device.device_id)
         if not url:
-            # Try latest snapshot
             url = self.coordinator.latest_snapshots.get(self._device.device_id)
         if not url:
             return None
@@ -94,6 +129,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
     def _handle_coordinator_update(self) -> None:
         """Update streaming and motion detection state from coordinator."""
         state = self.coordinator.device_states.get(self._device.device_id)
+        was_streaming = self._attr_is_streaming
         if state and state.activity_state:
             self._attr_is_streaming = state.activity_state in (
                 "userStreamActive",
@@ -102,5 +138,25 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         else:
             self._attr_is_streaming = False
 
+        # Stream just stopped — grab a final keyframe before the stream
+        # worker tears down so the dashboard tile keeps a fresh image
+        # (especially useful when the camera is then re-disarmed).
+        if was_streaming and not self._attr_is_streaming and self.stream is not None:
+            self.hass.async_create_task(self._cache_last_stream_frame())
+
         self._attr_motion_detection_enabled = self.coordinator.active_mode != "standby"
         self.async_write_ha_state()
+
+    async def _cache_last_stream_frame(self) -> None:
+        if self.stream is None:
+            return
+        try:
+            frame = await self.stream.async_get_image()
+        except Exception:
+            _LOGGER.debug("Failed to capture last stream frame", exc_info=True)
+            return
+        if frame:
+            self.coordinator.image_bytes[self._device.device_id] = frame
+            _LOGGER.debug(
+                "Cached %d bytes from stream end for %s", len(frame), self._device.device_id
+            )

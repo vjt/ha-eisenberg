@@ -114,6 +114,36 @@ class ModeChangeEvent(BaseModel):
     donated: bool | None = None
 
 
+class LocationInfo(BaseModel):
+    """One entry from GET /hmsdevicemanagement/users/{userId}/locations."""
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    location_id: str = Field(alias="locationId")
+    location_name: str | None = Field(None, alias="locationName")
+
+
+class ActiveModeStateProperties(BaseModel):
+    """Inner properties of the v3 activeMode REST response."""
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    mode: str
+
+
+class ActiveModeState(BaseModel):
+    """Response from GET/PUT /hmsweb/automation/v3/activeMode.
+
+    Carries the current mode and the revision number we must echo back on
+    the next PUT so concurrent updates don't clobber each other.
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    properties: ActiveModeStateProperties | None = None
+    revision: int = 0
+
+
 class ActiveModeProperties(BaseModel):
     """Inner properties of an active mode update."""
 

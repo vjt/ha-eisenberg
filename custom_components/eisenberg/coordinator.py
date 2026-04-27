@@ -41,7 +41,6 @@ from eisenberg.models import (
 
 from .const import (
     CONF_DEVICE_ID,
-    CONF_LAST_ACTIVE_MODE,
     CONF_MEDIA_DIR,
     CONF_TRUST_COOKIE,
     DOMAIN,
@@ -74,16 +73,23 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._devices: list[DeviceInfo] = []
         self._http_session: aiohttp.ClientSession | None = None
 
-        # Entity state — updated by MQTT handlers. active_mode is seeded
-        # from the config entry so the security mode sensor isn't "unknown"
-        # at boot; the REST automation/active endpoint can't be used because
-        # it returns the *configured* default modes (with a stale timestamp),
-        # not the live state set via the Arlo app.
+        # Entity state — updated by MQTT handlers.
         self.device_states: dict[str, DeviceState] = {}
         self.siren_states: dict[str, SirenState] = {}
-        self.active_mode: str | None = entry.data.get(CONF_LAST_ACTIVE_MODE)
+        # Mode is tracked at the location level via Arlo's v3 automation
+        # API. We learn the location_id and the current mode + revision at
+        # startup so the select entity is responsive immediately and the
+        # PUT revision counter stays in sync with the server.
+        self.active_mode: str | None = None
+        self.location_id: str | None = None
+        self._mode_revision: int = 1
         self.latest_snapshots: dict[str, str] = {}  # device_id -> URL
         self.latest_thumbnails: dict[str, str] = {}  # device_id -> URL or path
+        # Most recent image bytes per device. Cached so the dashboard tile
+        # has something to show even after Arlo's presigned URL has
+        # expired or while the camera is disarmed (no live snapshots
+        # possible from the cloud in that state).
+        self.image_bytes: dict[str, bytes] = {}
         self.motion_events: dict[str, MotionEvent] = {}  # device_id -> last event
 
     @property
@@ -116,14 +122,53 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.client.login()
         await self._save_cookies()
 
+    async def _cache_image_bytes(self, device_id: str, url: str) -> None:
+        """Download an image URL and cache the bytes for the camera entity.
+
+        Run as soon as the URL arrives via MQTT — Arlo's presigned URLs
+        expire after a few hours and the camera tile has no other source
+        of truth when the device is disarmed (no on-demand snapshots).
+        """
+        try:
+            async with aiohttp.ClientSession() as session, session.get(url) as resp:
+                if resp.status != 200:
+                    _LOGGER.debug("Failed to cache image for %s: HTTP %s", device_id, resp.status)
+                    return
+                self.image_bytes[device_id] = await resp.read()
+                _LOGGER.debug(
+                    "Cached %d bytes for %s",
+                    len(self.image_bytes[device_id]),
+                    device_id,
+                )
+        except Exception:
+            _LOGGER.debug("Image cache fetch failed for %s", device_id, exc_info=True)
+
     def _set_active_mode(self, mode: str) -> None:
-        """Update active mode and persist to config entry for next boot."""
+        """Update active mode in-memory.
+
+        The v3 endpoint is the source of truth and we read it at boot, so
+        no config-entry persistence is needed — the previous shim is gone.
+        """
         self.active_mode = mode
-        if self.entry.data.get(CONF_LAST_ACTIVE_MODE) != mode:
-            self.hass.config_entries.async_update_entry(
-                self.entry,
-                data={**self.entry.data, CONF_LAST_ACTIVE_MODE: mode},
-            )
+
+    async def async_set_active_mode(self, mode: str) -> None:
+        """Set the security mode via the v3 location API.
+
+        Pushes the new mode + current revision counter, then stores the
+        revision the server returns. MQTT will publish the change shortly
+        after, but we update self.active_mode optimistically so the UI
+        reflects the request immediately.
+        """
+        if self.location_id is None:
+            raise RuntimeError("location_id not initialised — cannot set mode")
+        result = await self.client.set_active_mode(self.location_id, mode, self._mode_revision)
+        if result.revision:
+            self._mode_revision = result.revision
+        if result.properties is not None:
+            self.active_mode = result.properties.mode
+        else:
+            self.active_mode = mode
+        self.async_set_updated_data(self.data or {})
 
     async def _save_cookies(self) -> None:
         """Persist trust cookies from the session to the config entry."""
@@ -201,16 +246,36 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._register_mqtt_handlers()
             await self._mqtt.connect()
 
-        # Request initial snapshots for all cameras
-        for device in self._devices:
-            try:
-                await self.client.request_snapshot(device.device_id)
-                _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
-            except Exception:
-                _LOGGER.debug("Could not request snapshot for %s", device.device_id)
+        # Discover location + current mode + revision via v3 endpoints.
+        # This runs before snapshot requests so we can skip them when the
+        # camera is disarmed (Arlo refuses with error 4006).
+        try:
+            locations = await self.client.get_locations()
+            if locations:
+                self.location_id = locations[0].location_id
+                state = await self.client.get_active_mode(self.location_id)
+                self._mode_revision = state.revision or 1
+                if state.properties is not None:
+                    self.active_mode = state.properties.mode
+                _LOGGER.info(
+                    "Initial mode: %s (revision=%s, location=%s)",
+                    self.active_mode,
+                    self._mode_revision,
+                    self.location_id,
+                )
+        except Exception:
+            _LOGGER.warning("Could not fetch initial active mode", exc_info=True)
 
-        if self.active_mode is not None:
-            _LOGGER.info("Restored last active mode: %s", self.active_mode)
+        # Request initial snapshots only when armed — Arlo refuses with
+        # error 4006 ("Invalid camera activity state change") if the
+        # camera is in standby, so polling it just generates noise.
+        if self.active_mode and self.active_mode != "standby":
+            for device in self._devices:
+                try:
+                    await self.client.request_snapshot(device.device_id)
+                    _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
+                except Exception:
+                    _LOGGER.debug("Could not request snapshot for %s", device.device_id)
 
     def _register_mqtt_handlers(self) -> None:
         """Register MQTT topic handlers."""
@@ -265,6 +330,12 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 state.motion_detected,
                 state.activity_state,
             )
+            # Surface Arlo's "Invalid camera activity state change" error
+            # once at INFO so it's clear why disarmed snapshots are silent.
+            err = payload.get("error")
+            if isinstance(err, dict):
+                msg = str(err.get("message"))  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
+                _LOGGER.info("Camera %s rejected request: %s", device_id, msg)
             self.async_set_updated_data(self.data or {})
         except Exception:
             _LOGGER.warning(
@@ -286,6 +357,8 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.latest_snapshots[device_id] = snap.presigned_url
             _LOGGER.debug("Snapshot available for %s", device_id)
 
+            # Cache bytes immediately — presigned URLs expire.
+            await self._cache_image_bytes(device_id, snap.presigned_url)
             # Archive if configured
             await self._archive_media(device_id, snap.presigned_url, "snapshot", "jpg")
 
@@ -340,6 +413,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "mp4",
                     )
                 if event.thumbnail_url:
+                    await self._cache_image_bytes(event.device_id, event.thumbnail_url)
                     await self._archive_media(
                         event.device_id,
                         event.thumbnail_url,

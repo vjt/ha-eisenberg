@@ -49,6 +49,17 @@
       "push_timeout": "Push approval expired. Restart the integration to try again."
     }
   },
+  "entity": {
+    "select": {
+      "security_mode": {
+        "state": {
+          "armAway": "Armed Away",
+          "armHome": "Armed Home",
+          "standby": "Standby"
+        }
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {

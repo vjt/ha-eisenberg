@@ -14,7 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 
 type EisenbergConfigEntry = ConfigEntry[EisenbergCoordinator]
 
-PLATFORMS = ["camera", "binary_sensor", "sensor", "switch"]
+PLATFORMS = ["camera", "binary_sensor", "select", "sensor", "switch"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: EisenbergConfigEntry) -> bool:

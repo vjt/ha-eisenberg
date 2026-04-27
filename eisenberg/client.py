@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -27,7 +27,7 @@ from .exceptions import (
     PushApprovalRequired,
     RateLimitedError,
 )
-from .models import DeviceInfo, StreamResponse
+from .models import ActiveModeState, DeviceInfo, LocationInfo, StreamResponse
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -427,6 +427,110 @@ class EisenbergClient:
             )
 
         return StreamResponse.model_validate(body["data"])
+
+    def _v3_mode_headers(self, token: str) -> dict[str, str]:
+        """Headers for the v3 location-based automation endpoints.
+
+        pyaarlo adds x-forwarded-user / x-user-device-id so the server
+        accepts the request as coming from this user; without them the
+        endpoint returns 403.
+        """
+        if self.user_id is None:
+            raise RuntimeError("Not authenticated")
+        headers = self._myapi_headers(token)
+        headers["x-forwarded-user"] = self.user_id
+        headers["x-user-device-id"] = self.user_id
+        return headers
+
+    async def get_locations(self) -> list[LocationInfo]:
+        """List the user's owned locations.
+
+        Modes are scoped to a location in the v3 automation API. Most users
+        have a single location. We pick the first one as the default.
+        """
+        if self.token is None or self.user_id is None:
+            raise RuntimeError("Not authenticated")
+
+        async with self.session.get(
+            f"{MYAPI_BASE}/hmsdevicemanagement/users/{self.user_id}/locations",
+            headers=self._myapi_headers(self.token),
+        ) as resp:
+            body = await resp.json()
+
+        _LOGGER.debug("get_locations response: %s", body)
+
+        try:
+            data: Any = body["data"]
+        except (KeyError, TypeError):
+            return []
+
+        raw: Any = None
+        for key in ("userLocations", "ownedLocations", "locations"):
+            try:
+                raw = data[key]
+            except (KeyError, TypeError):
+                continue
+            break
+        if not isinstance(raw, list):
+            return []
+
+        return [LocationInfo.model_validate(item) for item in cast("list[Any]", raw)]
+
+    async def get_active_mode(self, location_id: str) -> ActiveModeState:
+        """GET the current active mode + revision for a location."""
+        if self.token is None:
+            raise RuntimeError("Not authenticated")
+
+        async with self.session.get(
+            f"{MYAPI_BASE}/hmsweb/automation/v3/activeMode",
+            headers=self._v3_mode_headers(self.token),
+            params={"locationId": location_id},
+        ) as resp:
+            body = await resp.json()
+
+        _LOGGER.debug("get_active_mode response: %s", body)
+
+        try:
+            data: Any = body["data"]
+        except (KeyError, TypeError):
+            data = body
+        return ActiveModeState.model_validate(data)
+
+    async def set_active_mode(self, location_id: str, mode: str, revision: int) -> ActiveModeState:
+        """Set the active mode for a location. Returns the new revision.
+
+        Mirrors pyaarlo's set_mode: PUT activeMode?locationId=...&revision=N
+        with body {"mode": "<name>"}. The server returns a fresh revision
+        which the caller must store for the next call.
+        """
+        if self.token is None:
+            raise RuntimeError("Not authenticated")
+
+        async with self.session.put(
+            f"{MYAPI_BASE}/hmsweb/automation/v3/activeMode",
+            headers=self._v3_mode_headers(self.token),
+            params={"locationId": location_id, "revision": str(revision)},
+            json={"mode": mode},
+        ) as resp:
+            body = await resp.json()
+
+        _LOGGER.debug("set_active_mode response: %s", body)
+
+        try:
+            success = body["success"]
+        except (KeyError, TypeError):
+            success = True
+        if success is False:
+            raise APIError(
+                code="set_active_mode",
+                message=f"set_active_mode failed: {body}",
+            )
+
+        try:
+            data: Any = body["data"]
+        except (KeyError, TypeError):
+            data = body
+        return ActiveModeState.model_validate(data)
 
     async def set_siren(self, device_id: str, *, on: bool) -> None:
         """Turn siren on or off."""

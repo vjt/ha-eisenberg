@@ -1,4 +1,4 @@
-"""Sensor platform for Eisenberg — battery, signal strength, and mode."""
+"""Sensor platform for Eisenberg — battery and signal strength."""
 
 from __future__ import annotations
 
@@ -36,8 +36,6 @@ async def async_setup_entry(
     for device in coordinator.devices:
         entities.append(BatterySensor(coordinator, device))
         entities.append(SignalStrengthSensor(coordinator, device))
-    # One mode sensor per location (not per camera)
-    entities.append(ModeSensor(coordinator))
     async_add_entities(entities)
 
 
@@ -110,31 +108,4 @@ class SignalStrengthSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity
         state = self.coordinator.device_states.get(self._device.device_id)
         if state and state.signal_strength is not None:
             self._attr_native_value = state.signal_strength
-        self.async_write_ha_state()
-
-
-class ModeSensor(CoordinatorEntity[EisenbergCoordinator], SensorEntity):
-    """Arlo security mode sensor (Armed Away / Armed Home / Standby)."""
-
-    _attr_has_entity_name = True
-    _attr_name = "Security mode"
-    _attr_icon = "mdi:shield-home"
-    _attr_native_value: StateType | date | datetime | Decimal = None
-
-    def __init__(self, coordinator: EisenbergCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = "eisenberg_mode"
-        # Attach to first device for the device grouping
-        if coordinator.devices:
-            self._attr_device_info = {
-                "identifiers": {("eisenberg", coordinator.devices[0].device_id)},
-            }
-        if coordinator.active_mode:
-            self._attr_native_value = coordinator.active_mode
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Update mode from coordinator."""
-        if self.coordinator.active_mode is not None:
-            self._attr_native_value = self.coordinator.active_mode
         self.async_write_ha_state()
