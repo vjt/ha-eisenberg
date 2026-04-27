@@ -65,9 +65,16 @@
       "init": {
         "data": {
           "media_dir": "Storage Location",
-          "detection_timeout": "Detection sensor reset timeout (seconds)"
+          "detection_timeout": "Detection sensor reset timeout (seconds)",
+          "media_retention_days": "Archived media retention (days)"
         }
       }
+    }
+  },
+  "services": {
+    "snapshot": {
+      "name": "Take snapshot",
+      "description": "Request a fresh full-frame snapshot. Arrives asynchronously via MQTT and refreshes the camera tile."
     }
   }
 }

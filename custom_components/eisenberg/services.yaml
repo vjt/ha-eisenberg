@@ -1,0 +1,11 @@
+snapshot:
+  name: Take snapshot
+  description: >
+    Request a fresh full-frame snapshot from an Arlo camera.
+    The image is delivered asynchronously via MQTT and updates the
+    camera tile when it arrives. Fails if the camera is in standby
+    (Arlo refuses cloud snapshots while disarmed).
+  target:
+    entity:
+      integration: eisenberg
+      domain: camera

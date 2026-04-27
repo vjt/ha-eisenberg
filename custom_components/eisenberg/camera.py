@@ -9,12 +9,15 @@ import aiohttp
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from eisenberg import DeviceInfo
 
 from .coordinator import EisenbergCoordinator
+
+SERVICE_SNAPSHOT = "snapshot"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +30,13 @@ async def async_setup_entry(
     """Set up Eisenberg cameras."""
     coordinator: EisenbergCoordinator = entry.runtime_data
     async_add_entities(EisenbergCamera(coordinator, device) for device in coordinator.devices)
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        SERVICE_SNAPSHOT,
+        {},
+        "async_request_snapshot",
+    )
 
 
 class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
@@ -109,6 +119,27 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             _LOGGER.debug("Failed to fetch camera image from %s", url)
 
         return None
+
+    async def async_request_snapshot(self) -> None:
+        """Ask Arlo for a fresh full-frame snapshot.
+
+        The image arrives later via MQTT (fullFrameSnapshotAvailable) and
+        the coordinator caches/archives it. Arlo refuses with error 4006
+        when the camera is in standby — surface that as HomeAssistantError
+        so the service call fails loudly instead of silently no-oping.
+        """
+        if self.coordinator.active_mode == "standby":
+            from homeassistant.exceptions import HomeAssistantError
+
+            raise HomeAssistantError(
+                "Cannot snapshot while disarmed — Arlo refuses cloud snapshots in standby"
+            )
+        try:
+            await self.coordinator.client.request_snapshot(self._device.device_id)
+        except Exception as err:
+            from homeassistant.exceptions import HomeAssistantError
+
+            raise HomeAssistantError(f"Snapshot request failed: {err}") from err
 
     async def stream_source(self) -> str | None:
         """Return the RTSP stream source URL.
