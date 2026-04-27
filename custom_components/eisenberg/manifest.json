@@ -1,10 +1,11 @@
 {
   "domain": "eisenberg",
-  "name": "Eisenberg",
+  "name": "Eisenberg (Arlo)",
   "codeowners": ["@vjt"],
   "config_flow": true,
   "dependencies": ["media_source"],
   "documentation": "https://github.com/vjt/ha-eisenberg",
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/vjt/ha-eisenberg/issues",
   "requirements": [],
