@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.2 — 2026-04-28
+
+Hygiene release.
+
+### Changed
+
+- Test fixtures and design docs no longer carry the author's real
+  Arlo device serial / xCloudId — replaced with synthetic well-formed
+  values. Git history rewritten to scrub those identifiers from all
+  prior commits before the repo went public. 0.1.0 / 0.1.1 tags and
+  GitHub releases deleted as part of the rewrite. PyPI versions
+  0.1.0 and 0.1.1 are clean (the published wheels never carried the
+  test fixtures) but were superseded for version-numbering hygiene.
+
 ## 0.1.1 — 2026-04-28
 
 Packaging-only fix.
