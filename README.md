@@ -8,6 +8,8 @@ A Home Assistant custom integration for Arlo cameras, named after
 skating legend Arlo Eisenberg. Built around event-driven MQTT (no
 polling) with a typed Pydantic API client.
 
+📖 Long-form walk-through (UX, auth, MQTT, streaming): **[Eisenberg: Arlo cameras on Home Assistant, the easy way](https://sindro.me/posts/2026-04-28-eisenberg-arlo-on-home-assistant/)** ([🇮🇹 italiano](https://sindro.me/it/posts/2026-04-28-eisenberg-arlo-on-home-assistant/)).
+
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=vjt&repository=ha-eisenberg&category=integration)
 
 ## What you get
