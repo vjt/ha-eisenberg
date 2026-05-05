@@ -3,6 +3,8 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/v/release/vjt/ha-eisenberg?include_prereleases&sort=semver)](https://github.com/vjt/ha-eisenberg/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/vjt/ha-eisenberg/actions/workflows/ci.yml/badge.svg)](https://github.com/vjt/ha-eisenberg/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/vjt/ha-eisenberg/branch/master/graph/badge.svg)](https://codecov.io/gh/vjt/ha-eisenberg)
 
 A Home Assistant custom integration for Arlo cameras, named after
 skating legend Arlo Eisenberg. Built around event-driven MQTT (no
