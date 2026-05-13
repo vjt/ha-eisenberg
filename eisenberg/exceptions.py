@@ -6,6 +6,11 @@ so callers can catch broadly or narrowly.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import SecondFactor
+
 
 class EisenbergError(Exception):
     """Base exception for all eisenberg errors."""
@@ -15,16 +20,18 @@ class AuthenticationError(EisenbergError):
     """Authentication failed (wrong credentials, expired token, etc.)."""
 
 
-class PushApprovalRequired(AuthenticationError):  # noqa: N818
-    """Browser trust expired — caller must explicitly trigger push.
+class MfaRequired(AuthenticationError):  # noqa: N818
+    """Browser trust expired — caller must drive MFA.
 
-    Marker exception. No push has been sent yet. Caller (config flow)
-    must explicitly call start_push_login() to fire the push, then
-    try_finish_auth() once the user approves on their phone.
+    Carries the list of factors Arlo offered for this account so the
+    caller (config flow) can let the user pick one. No challenge has
+    been fired yet — call start_mfa(factor) to do that, then
+    try_finish_auth() with the OTP (or empty for PUSH polling).
     """
 
-    def __init__(self) -> None:
-        super().__init__("Push approval required")
+    def __init__(self, factors: list[SecondFactor]) -> None:
+        self.factors = factors
+        super().__init__(f"MFA required: {len(factors)} factor(s) available")
 
 
 class SessionExpiredError(AuthenticationError):

@@ -4,10 +4,11 @@ from eisenberg.exceptions import (
     APIError,
     AuthenticationError,
     EisenbergError,
+    MfaRequired,
     MQTTConnectionError,
-    PushApprovalRequired,
     SessionExpiredError,
 )
+from eisenberg.models import FactorType, SecondFactor
 
 
 def test_base_exception_is_exception() -> None:
@@ -20,10 +21,22 @@ def test_authentication_error_has_message() -> None:
     assert isinstance(err, EisenbergError)
 
 
-def test_push_approval_required_is_marker() -> None:
-    err = PushApprovalRequired()
+def test_mfa_required_carries_factors() -> None:
+    factors = [
+        SecondFactor.model_validate(
+            {
+                "factorId": "fid-push",
+                "factorType": "PUSH",
+                "displayName": "iPhone 16",
+                "factorNickname": "iPhone 16",
+                "factorRole": "PRIMARY",
+            }
+        ),
+    ]
+    err = MfaRequired(factors=factors)
     assert isinstance(err, AuthenticationError)
-    assert "Push approval" in str(err)
+    assert err.factors == factors
+    assert "1 factor" in str(err)
 
 
 def test_session_expired_is_auth_error() -> None:
@@ -40,3 +53,9 @@ def test_api_error_has_code_and_message() -> None:
 
 def test_mqtt_connection_error() -> None:
     assert issubclass(MQTTConnectionError, EisenbergError)
+
+
+def test_factor_type_values() -> None:
+    assert FactorType.PUSH.value == "PUSH"
+    assert FactorType.EMAIL.value == "EMAIL"
+    assert FactorType.SMS.value == "SMS"

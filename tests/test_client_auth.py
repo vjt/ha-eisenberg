@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,10 +13,16 @@ if TYPE_CHECKING:
     from aiohttp import CookieJar
 
 from eisenberg.client import EisenbergClient
-from eisenberg.exceptions import AuthenticationError, PushApprovalRequired
+from eisenberg.exceptions import AuthenticationError, MfaRequired
+from eisenberg.models import FactorType
 
 OCAPI = "https://ocapi-app.arlo.com"
 MYAPI = "https://myapi.arlo.com"
+
+# /api/getFactors carries a cache-busting `data=<epoch>` query param, so all
+# stubs of that endpoint must register against a URL regex rather than a
+# fixed string.
+GET_FACTORS_RE = re.compile(rf"^{re.escape(OCAPI)}/api/getFactors.*")
 
 
 def make_client(cookie_jar: CookieJar | None = None) -> EisenbergClient:
@@ -25,6 +32,29 @@ def make_client(cookie_jar: CookieJar | None = None) -> EisenbergClient:
         device_id="test-device-uuid",
         cookie_jar=cookie_jar,
     )
+
+
+_TWO_FACTORS_PAYLOAD = {
+    "data": {
+        "items": [
+            {
+                "factorId": "fid-push",
+                "factorType": "PUSH",
+                "displayName": "iPhone 16",
+                "factorNickname": "iPhone 16",
+                "factorRole": "PRIMARY",
+            },
+            {
+                "factorId": "fid-email",
+                "factorType": "EMAIL",
+                "displayName": "test@example.com",
+                "factorNickname": "test@example.com",
+                "factorRole": "SECONDARY",
+            },
+        ],
+    },
+    "meta": {"code": 200},
+}
 
 
 class TestTrustedBrowserFlow:
@@ -80,16 +110,16 @@ class TestTrustedBrowserFlow:
             assert client.user_id == "USER-123"
             assert client.mqtt_url == "wss://mqtt.arlo.com:8084"
 
-    async def test_trusted_login_no_push_needed(self, mocked: aioresponses) -> None:
+    async def test_trusted_login_no_mfa(self, mocked: aioresponses) -> None:
         client = make_client()
         async with client:
-            # Should NOT raise PushApprovalRequired
+            # Should NOT raise MfaRequired
             await client.login()
 
 
-class TestFirstTimeFlow:
-    async def test_login_does_not_fire_push(self) -> None:
-        """login() must signal trust expiry without firing startAuth."""
+class TestMfaDiscovery:
+    async def test_login_raises_mfa_required_with_factor_list(self) -> None:
+        """login() must hit getFactors and signal MFA without firing anything."""
         with aioresponses() as m:
             m.post(
                 f"{OCAPI}/api/auth",
@@ -109,57 +139,113 @@ class TestFirstTimeFlow:
                     "meta": {"code": 400, "error": "4012"},
                 },
             )
+            m.get(GET_FACTORS_RE, payload=_TWO_FACTORS_PAYLOAD)
 
             client = make_client()
             async with client:
-                with pytest.raises(PushApprovalRequired):
+                with pytest.raises(MfaRequired) as exc_info:
                     await client.login()
 
-                # Token was stashed for start_push_login() use
+                factors = exc_info.value.factors
+                assert {f.factor_type for f in factors} == {
+                    FactorType.PUSH,
+                    FactorType.EMAIL,
+                }
+                # Token was stashed for start_mfa() use
                 assert client.token == "initial-token"
                 assert client.user_id == "USER-123"
 
-            # Crucially: no startAuth call was made
+            # Crucially: no startAuth call was made (discovery is side-effect-free)
             requests = [k for k, _ in m.requests]
             assert all("/api/startAuth" not in str(req) for req in requests)
 
-    async def test_start_push_login_returns_factor_auth_code(self) -> None:
-        """start_push_login() fires startAuth and returns factorAuthCode."""
-        with aioresponses() as m:
-            m.post(
-                f"{OCAPI}/api/auth",
-                payload={
-                    "data": {
-                        "token": "initial-token",
-                        "userId": "USER-123",
-                        "authCompleted": False,
-                    },
-                    "meta": {"code": 200},
+
+class TestStartMfa:
+    async def _login_until_mfa(self, m: aioresponses) -> EisenbergClient:
+        m.post(
+            f"{OCAPI}/api/auth",
+            payload={
+                "data": {
+                    "token": "initial-token",
+                    "userId": "USER-123",
+                    "authCompleted": False,
                 },
-            )
-            m.post(
-                f"{OCAPI}/api/getFactorId",
-                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
-            )
+                "meta": {"code": 200},
+            },
+        )
+        m.post(
+            f"{OCAPI}/api/getFactorId",
+            payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+        )
+        m.get(GET_FACTORS_RE, payload=_TWO_FACTORS_PAYLOAD)
+        client = make_client()
+        await client.__aenter__()
+        with pytest.raises(MfaRequired):
+            await client.login()
+        return client
+
+    async def test_push_factor_uses_empty_factor_type(self) -> None:
+        """PingOne PUSH startAuth wants factorType="" with factorId."""
+        from eisenberg.models import SecondFactor
+
+        with aioresponses() as m:
+            client = await self._login_until_mfa(m)
             m.post(
                 f"{OCAPI}/api/startAuth",
                 payload={
-                    "data": {
-                        "factorAuthCode": "auth-code-xyz",
-                        "factors": [{"factorType": "PUSH", "displayName": "iPhone"}],
-                        "MFA_Config": {"timeout": {"PUSH": 120}},
-                    },
+                    "data": {"factorAuthCode": "code-push"},
                     "meta": {"code": 200},
                 },
             )
+            try:
+                push_factor = SecondFactor.model_validate(_TWO_FACTORS_PAYLOAD["data"]["items"][0])
+                code = await client.start_mfa(push_factor)
+                assert code == "code-push"
 
-            client = make_client()
-            async with client:
-                with pytest.raises(PushApprovalRequired):
-                    await client.login()
+                start_calls = [
+                    call
+                    for (method, url), calls in m.requests.items()
+                    if method == "POST" and "/api/startAuth" in str(url)
+                    for call in calls
+                ]
+                assert start_calls
+                body = start_calls[0].kwargs["json"]
+                assert body["factorType"] == ""
+                assert body["factorId"] == "fid-push"
+            finally:
+                await client.__aexit__(None, None, None)
 
-                code = await client.start_push_login()
-                assert code == "auth-code-xyz"
+    async def test_email_factor_uses_browser_factor_type(self) -> None:
+        """PingOne EMAIL startAuth wants factorType="BROWSER" with factorId."""
+        from eisenberg.models import SecondFactor
+
+        with aioresponses() as m:
+            client = await self._login_until_mfa(m)
+            m.post(
+                f"{OCAPI}/api/startAuth",
+                payload={
+                    "data": {"factorAuthCode": "code-email"},
+                    "meta": {"code": 200},
+                },
+            )
+            try:
+                email_factor = SecondFactor.model_validate(
+                    _TWO_FACTORS_PAYLOAD["data"]["items"][1]
+                )
+                code = await client.start_mfa(email_factor)
+                assert code == "code-email"
+
+                start_calls = [
+                    call
+                    for (method, url), calls in m.requests.items()
+                    if method == "POST" and "/api/startAuth" in str(url)
+                    for call in calls
+                ]
+                body = start_calls[0].kwargs["json"]
+                assert body["factorType"] == "BROWSER"
+                assert body["factorId"] == "fid-email"
+            finally:
+                await client.__aexit__(None, None, None)
 
 
 class TestAuthFailure:

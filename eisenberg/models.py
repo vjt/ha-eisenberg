@@ -23,6 +23,32 @@ class ArloMode(StrEnum):
     STANDBY = "standby"
 
 
+class FactorType(StrEnum):
+    """MFA second-factor types Arlo exposes via PingOne SDK."""
+
+    PUSH = "PUSH"
+    EMAIL = "EMAIL"
+    SMS = "SMS"
+
+
+class SecondFactor(BaseModel):
+    """One MFA factor as returned by /api/getFactors or /api/startAuth.
+
+    factor_role is "PRIMARY" for the user's preferred factor and
+    "SECONDARY" for fallbacks. display_name is what the picker UI
+    renders to the user (a device nickname for PUSH, a masked address
+    like "ma****@example.com" for EMAIL).
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    factor_id: str = Field(alias="factorId")
+    factor_type: FactorType = Field(alias="factorType")
+    display_name: str = Field(alias="displayName")
+    factor_nickname: str | None = Field(None, alias="factorNickname")
+    factor_role: str = Field(alias="factorRole")
+
+
 class DeviceState(BaseModel):
     """Camera device state update from MQTT.
 

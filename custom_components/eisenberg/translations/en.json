@@ -9,13 +9,27 @@
           "password": "Password"
         }
       },
+      "pick_factor": {
+        "title": "Choose Verification Method",
+        "description": "Pick how Arlo should verify this device. The list reflects the second-factor options on your Arlo account.",
+        "data": {
+          "factor_id": "Verification method"
+        }
+      },
       "push_approval": {
         "title": "Approve Push Notification",
         "description": "A push notification has been sent to your phone. Open the Arlo app, approve it, then click Submit below."
       },
+      "otp_entry": {
+        "title": "Enter Verification Code",
+        "description": "Arlo sent a one-time code to {destination}. Enter it below.",
+        "data": {
+          "otp": "Verification code"
+        }
+      },
       "reauth_confirm": {
         "title": "Re-authenticate Arlo",
-        "description": "The trust cookie for {username} has expired. Click Submit to send a fresh push approval to your phone."
+        "description": "The trust cookie for {username} has expired. Click Submit to start a fresh verification."
       },
       "reauth_password": {
         "title": "Password Required",
@@ -24,9 +38,23 @@
           "password": "Password"
         }
       },
+      "reauth_pick_factor": {
+        "title": "Choose Verification Method",
+        "description": "Pick how Arlo should verify this device.",
+        "data": {
+          "factor_id": "Verification method"
+        }
+      },
       "reauth_push": {
         "title": "Approve Push Notification",
         "description": "A push notification has been sent to your phone. Open the Arlo app, approve it, then click Submit below."
+      },
+      "reauth_otp": {
+        "title": "Enter Verification Code",
+        "description": "Arlo sent a one-time code to {destination}. Enter it below.",
+        "data": {
+          "otp": "Verification code"
+        }
       },
       "media_storage": {
         "title": "Media Storage",
@@ -38,15 +66,18 @@
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
+      "invalid_otp": "Verification code rejected. Check the code from your email/SMS and try again, or restart the integration setup if it has expired.",
       "push_pending": "Push not approved yet. Approve it in the Arlo app, then click Submit again.",
-      "push_timeout": "Push approval expired or failed. Restart the flow.",
+      "push_timeout": "Verification expired or failed. Restart the flow.",
       "rate_limited": "Arlo is rate-limiting requests. Wait a few hours and try again.",
       "cannot_connect": "Cannot connect to Arlo servers."
     },
     "abort": {
       "already_configured": "This account is already configured.",
       "rate_limited": "Arlo is rate-limiting requests. Wait a few hours and try again.",
-      "push_timeout": "Push approval expired. Restart the integration to try again."
+      "push_timeout": "Verification expired. Restart the integration to try again.",
+      "reauth_successful": "Re-authentication completed.",
+      "reconfigure_successful": "Reconfiguration completed."
     }
   },
   "entity": {

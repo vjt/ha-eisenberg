@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 — 2026-05-13
+
+### Added
+
+- **Multi-factor verification picker.** Arlo migrated its MFA backend
+  to the PingOne SDK in early May 2026, and accounts can now have a
+  mix of PUSH / EMAIL / SMS factors. The config flow discovers them
+  via `GET /api/getFactors` (no side effect) and lets the user pick
+  one. PUSH approves on phone; EMAIL/SMS shows an OTP-entry form.
+  Single-factor accounts skip the picker. Closes #5 (push never
+  arrived for users whose Arlo Secure app was outdated — they can
+  now fall back to email/SMS).
+- **Reconfigure step** on the integration card (Settings → Devices
+  & Services → Eisenberg → ⋮ → Reconfigure). Re-runs the MFA picker
+  on demand — no need to wait for trust-cookie expiry or trigger a
+  reauth failure.
+
+### Changed
+
+- `PushApprovalRequired` → `MfaRequired(factors=[...])` exception.
+  Carries the factor list so the caller can drive the picker.
+- `EisenbergClient.start_push_login()` → `start_mfa(factor)`.
+  `try_finish_auth(code, otp=None)` — pass `otp` for EMAIL/SMS,
+  leave it out for PUSH polling.
+
 ## 0.1.3 — 2026-04-28
 
 ### Fixed

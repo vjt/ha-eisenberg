@@ -24,10 +24,17 @@ from aiohttp import ClientSession, CookieJar
 from .exceptions import (
     APIError,
     AuthenticationError,
-    PushApprovalRequired,
+    MfaRequired,
     RateLimitedError,
 )
-from .models import ActiveModeState, DeviceInfo, LocationInfo, StreamResponse
+from .models import (
+    ActiveModeState,
+    DeviceInfo,
+    FactorType,
+    LocationInfo,
+    SecondFactor,
+    StreamResponse,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -145,10 +152,11 @@ class EisenbergClient:
     async def login(self) -> None:
         """Silent login. Sets self.token, self.user_id, self.mqtt_url.
 
-        NEVER fires a push. If the browser trust cookie is missing/expired,
-        raises PushApprovalRequired without any user-visible side effects.
-        The caller (config flow) is then responsible for explicitly calling
-        start_push_login() to trigger the push.
+        NEVER fires a push or otherwise contacts the user. If the browser
+        trust cookie is missing/expired, calls /api/getFactors to discover
+        the account's available MFA factors and raises MfaRequired with
+        them. The caller (config flow) lets the user pick a factor, then
+        calls start_mfa(factor) to fire it.
 
         Raises AuthenticationError on bad credentials.
         Raises RateLimitedError if Arlo is rate-limiting requests.
@@ -224,29 +232,63 @@ class EisenbergClient:
             await self._establish_session()
             return
 
-        # Browser not trusted — DO NOT fire push here. Stash the auth token
-        # so start_push_login() can use it, then signal the caller.
-        _LOGGER.info("Browser not trusted — caller must trigger push explicitly")
+        # Browser not trusted — discover factors (no side effect) and let
+        # the caller drive the picker.
+        _LOGGER.info("Browser not trusted — discovering MFA factors")
         self.token = token
-        raise PushApprovalRequired()
+        factors = await self._get_factors(token)
+        raise MfaRequired(factors=factors)
 
-    async def start_push_login(self) -> str:
-        """Fire the push notification. Returns factorAuthCode for finishAuth.
+    async def _get_factors(self, token: str) -> list[SecondFactor]:
+        """GET /api/getFactors — returns factor list without firing MFA."""
+        async with self.session.get(
+            f"{OCAPI_BASE}/api/getFactors?data={int(time.time())}",
+            headers=self._ocapi_headers(token),
+        ) as resp:
+            body = await resp.json()
 
-        Call this only after login() raised PushApprovalRequired AND the
-        user has explicitly requested re-authentication. Each call sends a
-        push to the user's phone.
+        if body["meta"].get("message") == "Too many requests":
+            raise RateLimitedError(
+                "Arlo is rate-limiting requests. Wait a few hours and try again."
+            )
+        if body["meta"]["code"] != 200:
+            raise AuthenticationError(f"getFactors failed: {body['meta'].get('error')}")
 
-        Requires self.token (set by login()) and self.user_id.
+        items = body["data"].get("items", [])
+        return [SecondFactor.model_validate(item) for item in items]
+
+    async def start_mfa(self, factor: SecondFactor) -> str:
+        """Fire the MFA challenge for `factor`. Returns factorAuthCode.
+
+        PUSH: sends a notification to the chosen device; finish_auth() then
+        polls /api/finishAuth (no otp) until the user taps approve.
+
+        EMAIL/SMS: Arlo delivers a one-time code to the chosen factor; the
+        caller must collect the code from the user and pass it to
+        try_finish_auth(code, otp=<code>).
+
+        Requires self.token + self.user_id from a prior login().
         """
         if self.token is None or self.user_id is None:
-            raise AuthenticationError("start_push_login called before login()")
+            raise AuthenticationError("start_mfa called before login()")
 
-        _LOGGER.info("Sending push approval request")
+        # PingOne PUSH wants factorType empty; EMAIL/SMS want factorType "BROWSER"
+        # (matches pyaarlo's working flow against the same backend).
+        request_factor_type = "" if factor.factor_type == FactorType.PUSH else "BROWSER"
+
+        _LOGGER.info(
+            "Firing MFA: factor_type=%s display=%s",
+            factor.factor_type,
+            factor.display_name,
+        )
         async with self.session.post(
             f"{OCAPI_BASE}/api/startAuth",
             headers=self._ocapi_headers(self.token),
-            json={"factorType": "", "userId": self.user_id},
+            json={
+                "factorId": factor.factor_id,
+                "factorType": request_factor_type,
+                "userId": self.user_id,
+            },
         ) as resp:
             body = await resp.json()
 
@@ -259,22 +301,33 @@ class EisenbergClient:
 
         return body["data"]["factorAuthCode"]
 
-    async def try_finish_auth(self, factor_auth_code: str) -> bool:
+    async def try_finish_auth(
+        self,
+        factor_auth_code: str,
+        otp: str | None = None,
+    ) -> bool:
         """Single finishAuth call. Returns True if approved, False if pending.
 
-        Each call increments Arlo's rate-limit counter — never call in a loop.
-        Caller (UI) drives retries: user clicks "Submit" after approving push.
+        For PUSH: call with otp=None. Returns False until the user taps
+        approve on the phone, then True. Each call increments Arlo's
+        rate-limit counter — never call in a loop. The UI drives retries.
+
+        For EMAIL/SMS: call with otp=<code-from-user>. Returns True on
+        success, raises AuthenticationError on a bad code.
 
         Raises RateLimitedError on "Too many requests".
-        Raises AuthenticationError if push expired or any other auth failure.
         """
+        payload: dict[str, Any] = {
+            "factorAuthCode": factor_auth_code,
+            "isBrowserTrusted": True,
+        }
+        if otp is not None:
+            payload["otp"] = otp
+
         async with self.session.post(
             f"{OCAPI_BASE}/api/finishAuth",
             headers=self._ocapi_headers(self.token),
-            json={
-                "factorAuthCode": factor_auth_code,
-                "isBrowserTrusted": True,
-            },
+            json=payload,
         ) as resp:
             body = await resp.json()
 

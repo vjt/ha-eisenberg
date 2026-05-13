@@ -62,13 +62,25 @@ environment, and restart.
 The config flow asks for your Arlo email and password.
 
 - If your browser is already trusted at Arlo, login is silent — no
-  push needed.
-- Otherwise, a push notification is sent to your phone. Approve it in
-  the Arlo app, then click **Submit**. Each click is a single API call
-  — no polling — so rate-limit risk stays low.
+  verification step needed.
+- Otherwise, you pick how Arlo should verify this device. Push
+  notification, email or SMS — whichever factors your account has
+  enabled. Push is fastest; email/SMS is the fallback if the Arlo
+  Secure app on your phone hasn't been opened recently.
+
+  <img src="docs/factor-picker.png" alt="Factor picker" width="480">
+
+- Push factor: approve the notification on your phone, then click
+  **Submit**. Email/SMS factor: type the one-time code Arlo just sent
+  you. Each click is a single API call — no polling — so rate-limit
+  risk stays low.
 
 After login you pick a media storage location (or **Disabled** to skip
 archival).
+
+Already configured? Settings → Devices & Services → **Eisenberg** →
+⋮ → **Reconfigure** re-runs the verification step (useful if your
+trust cookie expired, or you want to switch factor).
 
 ### Options
 

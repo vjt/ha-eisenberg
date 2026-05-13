@@ -26,8 +26,8 @@ from eisenberg import (
     AuthenticationError,
     DeviceInfo,
     EisenbergClient,
+    MfaRequired,
     MQTTEventStream,
-    PushApprovalRequired,
     RateLimitedError,
 )
 from eisenberg.models import (
@@ -347,9 +347,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             await self._login_silent()
-        except PushApprovalRequired as err:
+        except MfaRequired as err:
             raise ConfigEntryAuthFailed(
-                "Trust cookie expired — re-approve push to continue"
+                "Trust cookie expired — re-authenticate to continue"
             ) from err
         except (AuthenticationError, RateLimitedError) as err:
             raise ConfigEntryAuthFailed(str(err)) from err
@@ -744,9 +744,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info("Refreshing auth token")
             try:
                 await self._login_silent()
-            except PushApprovalRequired as err:
+            except MfaRequired as err:
                 raise ConfigEntryAuthFailed(
-                    "Trust cookie expired — re-approve push to continue"
+                    "Trust cookie expired — re-authenticate to continue"
                 ) from err
             except (AuthenticationError, RateLimitedError) as err:
                 raise ConfigEntryAuthFailed(str(err)) from err
