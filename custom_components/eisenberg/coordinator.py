@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
@@ -39,6 +39,7 @@ from eisenberg.models import (
     MotionEvent,
     SirenState,
     SnapshotAvailable,
+    SpotlightState,
 )
 
 from .const import (
@@ -80,6 +81,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Entity state — updated by MQTT handlers.
         self.device_states: dict[str, DeviceState] = {}
         self.siren_states: dict[str, SirenState] = {}
+        self.spotlight_states: dict[str, SpotlightState] = {}
         # Mode is tracked at the location level via Arlo's v3 automation
         # API. We learn the location_id and the current mode + revision at
         # startup so the select entity is responsive immediately and the
@@ -412,6 +414,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Camera state updates
         self._mqtt.on("d/+/out/cameras/+/is", self._handle_camera_state)
 
+        # Full device-properties dump — carries spotlight, battery, WiFi,
+        # motion zones etc. Topic name is misleading; same handler works
+        # because `properties` is a superset of the partial-update shape.
+        self._mqtt.on("d/+/out/cameras/+/privacyZones/is", self._handle_camera_state)
+
         # Snapshot available
         self._mqtt.on(
             "d/+/out/cameras/+/fullFrameSnapshotAvailable",
@@ -468,6 +475,27 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 state.motion_detected,
                 state.activity_state,
             )
+            raw_spot: Any = (
+                cast("dict[str, Any]", properties).get("spotlight")
+                if isinstance(properties, dict)
+                else None
+            )
+            if isinstance(raw_spot, dict):
+                spotlight_raw = cast("dict[str, Any]", raw_spot)
+                try:
+                    self.spotlight_states[device_id] = SpotlightState.model_validate(spotlight_raw)
+                    _LOGGER.debug(
+                        "Spotlight %s: enabled=%s intensity=%s",
+                        device_id,
+                        self.spotlight_states[device_id].enabled,
+                        self.spotlight_states[device_id].intensity,
+                    )
+                except Exception:
+                    _LOGGER.warning(
+                        "Failed to parse spotlight for %s: %s",
+                        device_id,
+                        json.dumps(spotlight_raw)[:200],
+                    )
             # Surface Arlo's "Invalid camera activity state change" error
             # once at INFO so it's clear why disarmed snapshots are silent.
             err = payload.get("error")

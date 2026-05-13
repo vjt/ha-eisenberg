@@ -14,7 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 
 type EisenbergConfigEntry = ConfigEntry[EisenbergCoordinator]
 
-PLATFORMS = ["camera", "binary_sensor", "select", "sensor", "switch"]
+PLATFORMS = ["camera", "binary_sensor", "light", "select", "sensor", "switch"]
 
 
 class _ArloStreamRetryFilter(logging.Filter):

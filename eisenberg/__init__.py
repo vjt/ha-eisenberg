@@ -23,6 +23,7 @@ from .models import (
     SecondFactor,
     SirenState,
     SnapshotAvailable,
+    SpotlightState,
     StreamResponse,
 )
 from .mqtt import MQTTEventStream
@@ -49,5 +50,6 @@ __all__ = [
     "SessionExpiredError",
     "SirenState",
     "SnapshotAvailable",
+    "SpotlightState",
     "StreamResponse",
 ]

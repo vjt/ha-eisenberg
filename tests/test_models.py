@@ -17,6 +17,7 @@ from eisenberg.models import (
     MotionEvent,
     SirenState,
     SnapshotAvailable,
+    SpotlightState,
     StreamResponse,
 )
 
@@ -179,6 +180,23 @@ class TestSirenState:
             }
         )
         assert state.is_on is False
+
+
+class TestSpotlightState:
+    def test_on_with_intensity(self) -> None:
+        state = SpotlightState.model_validate({"enabled": True, "intensity": 75})
+        assert state.enabled is True
+        assert state.intensity == 75
+
+    def test_off(self) -> None:
+        state = SpotlightState.model_validate({"enabled": False, "intensity": 50})
+        assert state.enabled is False
+        assert state.intensity == 50
+
+    def test_no_intensity(self) -> None:
+        state = SpotlightState.model_validate({"enabled": True})
+        assert state.enabled is True
+        assert state.intensity is None
 
 
 class TestSnapshotAvailable:

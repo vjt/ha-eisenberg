@@ -591,6 +591,47 @@ class EisenbergClient:
             data = body
         return ActiveModeState.model_validate(data)
 
+    async def set_spotlight(
+        self,
+        device_id: str,
+        *,
+        on: bool,
+        intensity: int | None = None,
+    ) -> None:
+        """Turn the camera spotlight on/off and optionally set brightness.
+
+        intensity is on Arlo's 0-100 scale. Only sent when provided so
+        on/off toggles don't reset whatever brightness the user picked
+        last via the app.
+        """
+        if self.token is None:
+            raise RuntimeError("Not authenticated")
+
+        spotlight: dict[str, Any] = {"enabled": on}
+        if intensity is not None:
+            spotlight["intensity"] = intensity
+
+        async with self.session.post(
+            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
+            headers=self._myapi_headers(self.token),
+            json={
+                "from": f"{self.user_id}_web",
+                "to": device_id,
+                "action": "set",
+                "resource": f"cameras/{device_id}",
+                "publishResponse": True,
+                "transId": f"web!spotlight!{int(time.time())}",
+                "properties": {"spotlight": spotlight},
+            },
+        ) as resp:
+            body = await resp.json()
+
+        if not body.get("success"):
+            raise APIError(
+                code=body.get("data", {}).get("error", "unknown"),
+                message="Spotlight command failed",
+            )
+
     async def set_siren(self, device_id: str, *, on: bool) -> None:
         """Turn siren on or off."""
         if self.token is None:

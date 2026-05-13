@@ -200,6 +200,21 @@ class SirenState(BaseModel):
         return self.siren_state == "on"
 
 
+class SpotlightState(BaseModel):
+    """Camera-integrated spotlight state.
+
+    Appears under the `spotlight` key in camera property payloads
+    (both the `cameras/{id}/is` partial updates and the full
+    `cameras/{id}/privacyZones/is` device dump). intensity is on a
+    0-100 scale.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    enabled: bool
+    intensity: int | None = None
+
+
 class SnapshotAvailable(BaseModel):
     """Snapshot URL notification from MQTT."""
 
