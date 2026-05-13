@@ -13,7 +13,10 @@ import json
 import logging
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
@@ -29,6 +32,7 @@ from eisenberg import (
     MfaRequired,
     MQTTEventStream,
     RateLimitedError,
+    SessionExpiredError,
 )
 from eisenberg.models import (
     ActiveMode,
@@ -127,7 +131,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         user-driven via the reauth flow. Each finishAuth call costs a
         rate-limit token; an unattended retry loop can lock the user out.
         """
+        _LOGGER.info("Silent login starting (trust cookie based)")
         await self.client.login()
+        _LOGGER.info("Silent login complete; mqtt_url=%s", self.client.mqtt_url)
         await self._save_cookies()
 
     async def _seed_image_cache_from_disk(self) -> None:
@@ -253,6 +259,35 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             _LOGGER.debug("Image cache fetch failed for %s", device_id, exc_info=True)
 
+    async def call_with_session_retry[T](
+        self,
+        op_name: str,
+        op: Callable[[], Awaitable[T]],
+    ) -> T:
+        """Run an Arlo API call; on Invalid-Token (2015) relogin and retry once.
+
+        Arlo can invalidate a session server-side at any time — usually
+        because the user logged in elsewhere (the official app on a
+        different phone, for example). The token sitting in our memory
+        looks fine but the next request comes back with error 2015.
+
+        We surface that as SessionExpiredError from the client, catch it
+        here, force a silent relogin via the trust cookie, and retry the
+        same call once. If the relogin itself fails (trust cookie also
+        expired, rate limit, MFA required), let the auth exception
+        bubble — the coordinator's update loop turns it into a HA
+        reauth flow.
+        """
+        try:
+            return await op()
+        except SessionExpiredError:
+            _LOGGER.warning(
+                "Arlo rejected token during %s — re-logging in and retrying once",
+                op_name,
+            )
+            await self._login_silent()
+            return await op()
+
     def _set_active_mode(self, mode: str) -> None:
         """Update active mode in-memory.
 
@@ -278,13 +313,18 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         from eisenberg import APIError
 
+        location_id = self.location_id
+
+        async def _do_set() -> Any:
+            return await self.client.set_active_mode(location_id, mode, self._mode_revision)
+
         try:
-            result = await self.client.set_active_mode(self.location_id, mode, self._mode_revision)
+            result = await self.call_with_session_retry("set_active_mode", _do_set)
         except APIError:
             _LOGGER.info("set_active_mode failed, refreshing revision and retrying once")
-            state = await self.client.get_active_mode(self.location_id)
+            state = await self.client.get_active_mode(location_id)
             self._mode_revision = state.revision or 1
-            result = await self.client.set_active_mode(self.location_id, mode, self._mode_revision)
+            result = await self.call_with_session_retry("set_active_mode", _do_set)
 
         if result.revision:
             self._mode_revision = result.revision
@@ -358,13 +398,40 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._devices = await self.client.get_devices()
 
+        # Collect every distinct xCloudId — accounts with cameras on
+        # multiple base stations need a subscription per base or events
+        # from the others never reach us. Order is preserved (dict trick)
+        # so MQTT logs stay stable across restarts.
+        x_cloud_ids = list(dict.fromkeys(d.x_cloud_id for d in self._devices))
+        _LOGGER.info(
+            "Discovered %d device(s) across %d base(s): xCloudIds=%s",
+            len(self._devices),
+            len(x_cloud_ids),
+            x_cloud_ids,
+        )
+        for device in self._devices:
+            _LOGGER.info(
+                "  device id=%s name=%r model=%s cloud=%s",
+                device.device_id,
+                device.device_name,
+                device.model_id,
+                device.x_cloud_id,
+            )
+        if len(x_cloud_ids) > 1:
+            _LOGGER.warning(
+                "Account spans %d Arlo base stations — subscribing to all. "
+                "If any device entities stay unknown, verify their xCloudId is "
+                "in the subscribed list above.",
+                len(x_cloud_ids),
+            )
+
         # Start MQTT
-        if self.client.mqtt_url and self.client.user_id and self.client.token:
+        if self.client.mqtt_url and self.client.user_id and self.client.token and x_cloud_ids:
             self._mqtt = MQTTEventStream(
                 mqtt_url=self.client.mqtt_url,
                 user_id=self.client.user_id,
                 token=self.client.token,
-                x_cloud_id=self.client.x_cloud_id,
+                x_cloud_ids=x_cloud_ids,
                 http_session=self._http_session,
             )
             self._register_mqtt_handlers()
@@ -786,12 +853,18 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._mqtt is None and self.client.mqtt_url:
             _LOGGER.info("Reconnecting MQTT")
             try:
-                if self.client.user_id and self.client.token and self._http_session:
+                x_cloud_ids = list(dict.fromkeys(d.x_cloud_id for d in self._devices))
+                if (
+                    self.client.user_id
+                    and self.client.token
+                    and self._http_session
+                    and x_cloud_ids
+                ):
                     self._mqtt = MQTTEventStream(
                         mqtt_url=self.client.mqtt_url,
                         user_id=self.client.user_id,
                         token=self.client.token,
-                        x_cloud_id=self.client.x_cloud_id,
+                        x_cloud_ids=x_cloud_ids,
                         http_session=self._http_session,
                     )
                     self._register_mqtt_handlers()

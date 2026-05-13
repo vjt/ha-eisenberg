@@ -77,7 +77,7 @@ class MQTTEventStream:
     """Persistent MQTT connection over WebSocket to Arlo's broker.
 
     Usage:
-        stream = MQTTEventStream(mqtt_url, user_id, token, x_cloud_id)
+        stream = MQTTEventStream(mqtt_url, user_id, token, [x_cloud_id])
         stream.on("d/+/out/cameras/+/is", handle_camera_state)
         await stream.connect()
         # ... runs until disconnect
@@ -89,13 +89,15 @@ class MQTTEventStream:
         mqtt_url: str,
         user_id: str,
         token: str,
-        x_cloud_id: str,
+        x_cloud_ids: list[str],
         http_session: aiohttp.ClientSession | None = None,
     ) -> None:
+        if not x_cloud_ids:
+            raise ValueError("x_cloud_ids must not be empty")
         self._mqtt_url = mqtt_url
         self._user_id = user_id
         self._token = token
-        self._x_cloud_id = x_cloud_id
+        self._x_cloud_ids = x_cloud_ids
         self._session = http_session
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._router = TopicRouter()
@@ -151,11 +153,12 @@ class MQTTEventStream:
             await self._ws.close()
             raise ConnectionError(f"MQTT CONNACK failed with rc={rc}")
 
-        # SUBSCRIBE
-        topics = [
-            f"d/{self._x_cloud_id}/out/#",
-            f"u/{self._user_id}/in/#",
-        ]
+        # SUBSCRIBE — one device topic per unique xCloudId. Accounts with
+        # cameras on multiple base stations have multiple xCloudIds; if we
+        # subscribe to only one, the other base stations' device events
+        # (battery, signal, connectivity) never reach us.
+        topics = [f"d/{cid}/out/#" for cid in self._x_cloud_ids]
+        topics.append(f"u/{self._user_id}/in/#")
         subscribe_pkt = build_subscribe(packet_id=1, topics=topics)
         await self._ws.send_bytes(subscribe_pkt)
 

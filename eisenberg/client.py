@@ -26,6 +26,7 @@ from .exceptions import (
     AuthenticationError,
     MfaRequired,
     RateLimitedError,
+    SessionExpiredError,
 )
 from .models import (
     ActiveModeState,
@@ -40,6 +41,27 @@ _LOGGER = logging.getLogger(__name__)
 
 OCAPI_BASE = "https://ocapi-app.arlo.com"
 MYAPI_BASE = "https://myapi.arlo.com"
+
+# Arlo error codes that mean "your token is bad — log in again". Other codes
+# are operational (rate-limit, mode-conflict, etc.) and not auth-related.
+_INVALID_TOKEN_CODES: frozenset[str] = frozenset({"2015"})
+
+
+def _raise_for_arlo_error(body: dict[str, Any], op: str) -> None:
+    """Raise the right exception for a non-success Arlo REST response.
+
+    Distinguishes Arlo's "Invalid Token" error (code 2015) from generic
+    operational failures so callers can relogin-and-retry instead of
+    bubbling a generic APIError up to the UI as a stack trace.
+    """
+    raw: Any = body.get("data")
+    data: dict[str, Any] = cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
+    err_code = str(data.get("error", "unknown"))
+    message = str(data.get("message") or data.get("reason") or "")
+    if err_code in _INVALID_TOKEN_CODES:
+        raise SessionExpiredError(f"Arlo rejected token during {op}: {message or 'Invalid Token'}")
+    raise APIError(code=err_code, message=f"{op} failed: {body}")
+
 
 # Mobile UA to get RTSP URLs from startStream (not DASH)
 _MOBILE_UA = "Arlo/4.0 (iPhone; iOS 18.0)"
@@ -385,10 +407,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Session establishment failed",
-            )
+            _raise_for_arlo_error(body, "establish_session")
 
         self.mqtt_url = body["data"].get("mqttUrl", "")
 
@@ -417,10 +436,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Failed to list devices",
-            )
+            _raise_for_arlo_error(body, "get_devices")
 
         devices = [DeviceInfo.model_validate(d) for d in body["data"]]
 
@@ -451,10 +467,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Snapshot request failed",
-            )
+            _raise_for_arlo_error(body, "request_snapshot")
 
     async def start_stream(self, device_id: str) -> StreamResponse:
         """Start a live stream. Returns RTSP URL (uses mobile UA)."""
@@ -480,10 +493,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Stream start failed",
-            )
+            _raise_for_arlo_error(body, "start_stream")
 
         return StreamResponse.model_validate(body["data"])
 
@@ -580,10 +590,7 @@ class EisenbergClient:
         except (KeyError, TypeError):
             success = True
         if success is False:
-            raise APIError(
-                code="set_active_mode",
-                message=f"set_active_mode failed: {body}",
-            )
+            _raise_for_arlo_error(body, "set_active_mode")
 
         try:
             data: Any = body["data"]
@@ -627,10 +634,7 @@ class EisenbergClient:
             body = await resp.json()
 
         if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Spotlight command failed",
-            )
+            _raise_for_arlo_error(body, "set_spotlight")
 
     async def set_siren(self, device_id: str, *, on: bool) -> None:
         """Turn siren on or off."""
@@ -661,7 +665,4 @@ class EisenbergClient:
             body = await resp.json()
 
         if not body.get("success"):
-            raise APIError(
-                code=body.get("data", {}).get("error", "unknown"),
-                message="Siren command failed",
-            )
+            _raise_for_arlo_error(body, "set_siren")

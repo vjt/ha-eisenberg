@@ -135,7 +135,10 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
                 "Cannot snapshot while disarmed — Arlo refuses cloud snapshots in standby"
             )
         try:
-            await self.coordinator.client.request_snapshot(self._device.device_id)
+            await self.coordinator.call_with_session_retry(
+                "request_snapshot",
+                lambda: self.coordinator.client.request_snapshot(self._device.device_id),
+            )
         except Exception as err:
             from homeassistant.exceptions import HomeAssistantError
 
@@ -150,7 +153,10 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         pyaarlo's behaviour) so HA's stream worker negotiates TLS.
         """
         try:
-            resp = await self.coordinator.client.start_stream(self._device.device_id)
+            resp = await self.coordinator.call_with_session_retry(
+                "start_stream",
+                lambda: self.coordinator.client.start_stream(self._device.device_id),
+            )
         except Exception:
             _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
             return None

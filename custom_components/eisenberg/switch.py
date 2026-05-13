@@ -59,8 +59,14 @@ class SirenSwitch(CoordinatorEntity[EisenbergCoordinator], SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn siren on."""
-        await self.coordinator.client.set_siren(self._device.device_id, on=True)
+        await self.coordinator.call_with_session_retry(
+            "set_siren_on",
+            lambda: self.coordinator.client.set_siren(self._device.device_id, on=True),
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn siren off."""
-        await self.coordinator.client.set_siren(self._device.device_id, on=False)
+        await self.coordinator.call_with_session_retry(
+            "set_siren_off",
+            lambda: self.coordinator.client.set_siren(self._device.device_id, on=False),
+        )

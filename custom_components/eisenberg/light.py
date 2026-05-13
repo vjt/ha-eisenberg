@@ -71,9 +71,15 @@ class SpotlightLight(CoordinatorEntity[EisenbergCoordinator], LightEntity):
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         if brightness is not None:
             intensity = round(int(brightness) / 255 * 100)
-        await self.coordinator.client.set_spotlight(
-            self._device.device_id, on=True, intensity=intensity
+        await self.coordinator.call_with_session_retry(
+            "set_spotlight_on",
+            lambda: self.coordinator.client.set_spotlight(
+                self._device.device_id, on=True, intensity=intensity
+            ),
         )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.coordinator.client.set_spotlight(self._device.device_id, on=False)
+        await self.coordinator.call_with_session_retry(
+            "set_spotlight_off",
+            lambda: self.coordinator.client.set_spotlight(self._device.device_id, on=False),
+        )
