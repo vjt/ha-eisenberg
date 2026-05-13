@@ -18,6 +18,19 @@ The fix: stream the whole tree through a single SSH connection with `tar`, then
 verify every deployed file's sha256 against the local copy. One connection,
 atomic extract, explicit verification — no silent drops.
 
+## Why we restart twice
+
+The HA Supervisor's component loader calls `pip install pyeisenberg>=X.Y.Z`
+on every integration startup, even when the requirement is already satisfied
+— pip re-writes the package files from its wheel cache (PyPI's published
+version), overwriting our manually-deployed development code. So a single
+restart leaves the container running the previous PyPI build, not the dev
+copy.
+
+The robust dance: restart once (let HA finish its pip-install settle),
+re-deploy the library on top (now nothing else will touch it), then restart
+again so HA picks up the dev code. Two restarts, one source of truth.
+
 ## Steps
 
 1. **Test suite**: `pytest tests/ -x -q` — abort if any test fails.
@@ -37,7 +50,8 @@ atomic extract, explicit verification — no silent drops.
    ```
    Then re-run the resolve step.
 
-5. **Deploy integration files** (HAOS host filesystem, single SSH, tar pipe):
+5. **Deploy integration files** (HAOS host filesystem — safe from HA's pip,
+   so we do these once before the first restart):
    ```bash
    ssh root@homeassistant -p 22222 \
      "mkdir -p /mnt/data/supervisor/homeassistant/custom_components/eisenberg/translations"
@@ -46,14 +60,23 @@ atomic extract, explicit verification — no silent drops.
        "tar -xf - -C /mnt/data/supervisor/homeassistant/custom_components/eisenberg/"
    ```
 
-6. **Deploy client library** (inside HA Docker container, single SSH, tar pipe):
+6. **First restart** so HA picks up the new manifest and lets pip-install
+   settle on its own copy of the library before we overwrite it:
+   ```bash
+   ssh root@homeassistant -p 22222 "ha core restart"
+   until ssh root@homeassistant -p 22222 "ha core info" >/dev/null 2>&1; do sleep 3; done
+   ```
+
+7. **Deploy client library** (single SSH, tar pipe — HA's pip step is done
+   so nothing else will touch these files now):
    ```bash
    tar -cf - -C eisenberg . | \
      ssh root@homeassistant -p 22222 \
        "docker exec -i homeassistant tar -xf - -C $PY_DIR/"
    ```
 
-7. **Verify checksums** — catches any silent corruption from the tar pipes:
+8. **Verify checksums** — catches both tar-pipe corruption and any race
+   with pip's reinstall:
    ```bash
    set -e
    # Integration
@@ -74,16 +97,17 @@ atomic extract, explicit verification — no silent drops.
    done
    echo "All checksums match"
    ```
-   If any mismatch: abort, do NOT restart HA. Investigate the tar pipe first.
+   If any mismatch: abort and investigate. A mismatch on the library after
+   the first restart usually means HA's pip step hadn't actually finished
+   when `ha core info` returned ready — wait longer and re-deploy.
 
-8. **Restart HA**: `ssh root@homeassistant -p 22222 "ha core restart"`
-
-9. **Wait for HA core to be ready** — poll, don't sleep blindly:
+9. **Second restart** so HA loads the dev library now sitting on disk:
    ```bash
+   ssh root@homeassistant -p 22222 "ha core restart"
    until ssh root@homeassistant -p 22222 "ha core info" >/dev/null 2>&1; do sleep 3; done
    ```
 
-10. **Log check** — explicitly grep for ERROR lines AFTER the restart marker:
+10. **Log check** — explicitly grep for ERROR lines AFTER the second restart:
     ```bash
     ssh root@homeassistant -p 22222 \
       "docker logs homeassistant --since 2m 2>&1 | grep -iE 'eisenberg.*(error|traceback|importerror)' | tail -30"
