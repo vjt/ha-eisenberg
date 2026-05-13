@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1 — 2026-05-13
+
+### Fixed
+
+- **Multi-base-station accounts no longer lose device state.** When an
+  Arlo account spans more than one base station, each base has its own
+  xCloudId — and we used to subscribe MQTT to only the first one we
+  found. Battery, signal, connectivity, motion etc. for cameras on
+  other bases never reached HA, leaving those entities stuck on
+  `unknown`. `MQTTEventStream` now takes a list of xCloudIds and the
+  coordinator computes the full set from the discovered devices.
+  Closes #6.
+- **Stale tokens now relogin instead of bubbling stack traces.** Arlo
+  invalidates a token server-side as soon as the same account logs in
+  somewhere else (typically the official Arlo app on a phone). The
+  next REST call would come back with `{"error": "2015"}` and
+  surfaced as a stack trace on mode change, or as a silent infinite
+  spinner on live streaming. The client now raises `SessionExpiredError`
+  distinctly for code 2015, and the coordinator runs every
+  user-triggered call (snapshot, stream, mode change, siren,
+  spotlight) through `call_with_session_retry`, which catches the
+  error, relogins silently via the trust cookie, and retries once.
+  Closes #2.
+
+### Added
+
+- More setup-time logging: device discovery now prints each camera's
+  id, friendly name, model and xCloudId, plus a warning when more
+  than one base station is in play. The silent-login start/complete
+  is also logged so re-auth attempts are visible at INFO without
+  needing `debug` on.
+
 ## 0.3.0 — 2026-05-13
 
 ### Added
