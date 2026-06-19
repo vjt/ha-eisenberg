@@ -22,6 +22,8 @@ def make_authed_client() -> EisenbergClient:
     client.token = "tok"
     client.user_id = "USER-123"
     client._x_cloud_id = "XCLOUD-1"
+    # Per-device base-station xCloudIds, as populated by get_devices().
+    client._device_cloud_ids = {"CAM-1": "XCLOUD-1"}
     return client
 
 
@@ -105,3 +107,69 @@ class TestSessionExpired:
                     await client.set_siren("CAM-1", on=True)
                 assert excinfo.value.code == "4006"
                 assert not isinstance(excinfo.value, SessionExpiredError)
+
+
+class TestPerDeviceCloudId:
+    """Per-device xCloudId routing (issue #7).
+
+    Each camera carries its own base-station xCloudId. Accounts with cameras
+    on multiple Arlo bases have a different xCloudId per camera; sending the
+    wrong base's id gets the request rejected with "no such device". So every
+    per-device REST call must send that device's own xCloudId — not the first
+    device's, which is what broke streaming on multi-base accounts.
+    """
+
+    @staticmethod
+    def _devices_payload() -> dict:
+        return {
+            "success": True,
+            "data": [
+                {
+                    "deviceId": "CAM-A",
+                    "deviceName": "Front",
+                    "modelId": "VMC2052A",
+                    "xCloudId": "BASE-A",
+                },
+                {
+                    "deviceId": "CAM-B",
+                    "deviceName": "Back",
+                    "modelId": "VMC2052A",
+                    "xCloudId": "BASE-B",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _post_header(m: aioresponses, key: str) -> str:
+        reqs = [calls for (method, _url), calls in m.requests.items() if method == "POST"]
+        return reqs[0][0].kwargs["headers"][key]
+
+    async def test_get_devices_maps_each_device_to_its_own_cloud_id(self) -> None:
+        with aioresponses() as m:
+            m.get(f"{MYAPI}/hmsweb/v2/users/devices", payload=self._devices_payload())
+            async with make_authed_client() as client:
+                client._device_cloud_ids = {}
+                await client.get_devices()
+
+            assert client._device_cloud_ids == {"CAM-A": "BASE-A", "CAM-B": "BASE-B"}
+
+    async def test_start_stream_sends_target_device_cloud_id(self) -> None:
+        with aioresponses() as m:
+            m.get(f"{MYAPI}/hmsweb/v2/users/devices", payload=self._devices_payload())
+            m.post(
+                f"{MYAPI}/hmsweb/users/devices/startStream",
+                payload={"success": True, "data": {"url": "rtsp://stream"}},
+            )
+            async with make_authed_client() as client:
+                client._device_cloud_ids = {}
+                await client.get_devices()
+                # CAM-B is NOT the first device — the old bug sent BASE-A here.
+                await client.start_stream("CAM-B")
+
+            assert self._post_header(m, "xCloudId") == "BASE-B"
+
+    async def test_command_for_undiscovered_device_raises(self) -> None:
+        async with make_authed_client() as client:
+            client._device_cloud_ids = {}
+            with pytest.raises(RuntimeError, match="Unknown device_id"):
+                await client.set_siren("CAM-X", on=True)

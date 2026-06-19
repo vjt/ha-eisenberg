@@ -95,6 +95,7 @@ class EisenbergClient:
         self.user_id: str | None = None
         self.mqtt_url: str | None = None
         self._x_cloud_id: str | None = None
+        self._device_cloud_ids: dict[str, str] = {}
         self._token_issued_at: float = 0
 
     def set_http_session(self, session: ClientSession) -> None:
@@ -151,8 +152,29 @@ class EisenbergClient:
             headers["Authorization"] = base64.b64encode(token.encode()).decode()
         return headers
 
+    def _device_cloud_id(self, device_id: str) -> str:
+        """The base-station xCloudId to send for device_id's REST calls.
+
+        Accounts with cameras spread across multiple Arlo base stations
+        have a distinct xCloudId per base. Sending the account-level
+        default (the first device's xCloudId) for a device that lives on
+        another base gets the request rejected with "no such device" even
+        though the device id is correct. Populated by get_devices(); an
+        unknown device_id means we're commanding a device we never
+        discovered, which is a bug — crash rather than silently fall back
+        to the wrong base's id and reintroduce the very failure.
+        """
+        if device_id not in self._device_cloud_ids:
+            raise RuntimeError(f"Unknown device_id {device_id!r}; call get_devices() first")
+        return self._device_cloud_ids[device_id]
+
     def _myapi_headers(self, token: str) -> dict[str, str]:
-        """Headers for myapi.arlo.com — raw token, not base64."""
+        """Headers for myapi.arlo.com — raw token, not base64.
+
+        Carries the account-level xCloudId, correct for account- and
+        location-scoped calls. Per-device calls must override it with that
+        device's own base-station id — see _device_headers.
+        """
         return {
             "Content-Type": "application/json; charset=utf-8",
             "Accept": "application/json",
@@ -164,9 +186,15 @@ class EisenbergClient:
             "User-Agent": _BROWSER_UA,
         }
 
-    def _myapi_headers_mobile(self, token: str) -> dict[str, str]:
-        """Headers for myapi.arlo.com with mobile UA (for RTSP streams)."""
+    def _device_headers(self, token: str, device_id: str) -> dict[str, str]:
+        """myapi headers carrying device_id's own base-station xCloudId."""
         headers = self._myapi_headers(token)
+        headers["xCloudId"] = self._device_cloud_id(device_id)
+        return headers
+
+    def _device_headers_mobile(self, token: str, device_id: str) -> dict[str, str]:
+        """Device headers with mobile UA (for the RTSP startStream call)."""
+        headers = self._device_headers(token, device_id)
         headers["User-Agent"] = _MOBILE_UA
         headers["x-user-device-type"] = "PHONE"
         return headers
@@ -440,7 +468,15 @@ class EisenbergClient:
 
         devices = [DeviceInfo.model_validate(d) for d in body["data"]]
 
-        # Set xCloudId from first device
+        # Track every device's own xCloudId — needed for any per-device REST
+        # call (start_stream, request_snapshot, set_spotlight, set_siren).
+        # Accounts with cameras on multiple base stations have a different
+        # xCloudId per camera; see _device_cloud_id.
+        for d in devices:
+            self._device_cloud_ids[d.device_id] = d.x_cloud_id
+
+        # Account-level default for calls not scoped to a single device
+        # (e.g. session/v3, locations, mode changes scoped to a location).
         if devices and self._x_cloud_id is None:
             self._x_cloud_id = devices[0].x_cloud_id
 
@@ -453,7 +489,7 @@ class EisenbergClient:
 
         async with self.session.post(
             f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
-            headers=self._myapi_headers(self.token),
+            headers=self._device_headers(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
                 "to": device_id,
@@ -476,7 +512,7 @@ class EisenbergClient:
 
         async with self.session.post(
             f"{MYAPI_BASE}/hmsweb/users/devices/startStream",
-            headers=self._myapi_headers_mobile(self.token),
+            headers=self._device_headers_mobile(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
                 "to": device_id,
@@ -620,7 +656,7 @@ class EisenbergClient:
 
         async with self.session.post(
             f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
-            headers=self._myapi_headers(self.token),
+            headers=self._device_headers(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
                 "to": device_id,
@@ -651,7 +687,7 @@ class EisenbergClient:
 
         async with self.session.post(
             f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
-            headers=self._myapi_headers(self.token),
+            headers=self._device_headers(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
                 "to": device_id,
