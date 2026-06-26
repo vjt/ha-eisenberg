@@ -9,6 +9,7 @@ from eisenberg.mqtt_codec import (
     parse_connack,
     parse_packet_type,
     parse_publish,
+    parse_suback,
 )
 
 
@@ -79,6 +80,23 @@ class TestParseConnack:
     def test_bad_credentials(self) -> None:
         rc = parse_connack(bytes([0x20, 0x02, 0x00, 0x04]))
         assert rc == 4
+
+
+class TestParseSuback:
+    def test_single_granted(self) -> None:
+        # 0x90, remaining=3, packet_id=0x0001, one return code 0x00 (QoS 0 granted)
+        codes = parse_suback(bytes([0x90, 0x03, 0x00, 0x01, 0x00]))
+        assert codes == [0x00]
+
+    def test_mixed_grant_and_failure(self) -> None:
+        # Two topics: first granted QoS 0, second denied (0x80).
+        codes = parse_suback(bytes([0x90, 0x04, 0x00, 0x01, 0x00, 0x80]))
+        assert codes == [0x00, 0x80]
+
+    def test_many_topics(self) -> None:
+        payload = bytes([0x00, 0x01]) + bytes([0x00, 0x00, 0x80, 0x00])
+        pkt = bytes([0x90, len(payload)]) + payload
+        assert parse_suback(pkt) == [0x00, 0x00, 0x80, 0x00]
 
 
 class TestParsePublish:

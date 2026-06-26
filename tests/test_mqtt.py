@@ -4,7 +4,47 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from eisenberg.mqtt import TopicRouter
+from eisenberg.mqtt import TopicRouter, build_subscribe_topics
+
+
+class TestBuildSubscribeTopics:
+    def test_one_base_no_extras(self) -> None:
+        topics = build_subscribe_topics(
+            x_cloud_ids=["BASE-A"],
+            user_id="USER",
+            extra_topics=[],
+        )
+        assert topics == ["d/BASE-A/out/#", "u/USER/in/#"]
+
+    def test_multiple_bases_preserve_order(self) -> None:
+        topics = build_subscribe_topics(
+            x_cloud_ids=["BASE-A", "BASE-B"],
+            user_id="USER",
+            extra_topics=[],
+        )
+        assert topics == [
+            "d/BASE-A/out/#",
+            "d/BASE-B/out/#",
+            "u/USER/in/#",
+        ]
+
+    def test_device_topics_appended_and_deduped(self) -> None:
+        # A doorbell whose own allowedMqttTopics name a resource our wildcards
+        # would already cover, plus one that lands outside them.
+        topics = build_subscribe_topics(
+            x_cloud_ids=["BASE-A"],
+            user_id="USER",
+            extra_topics=[
+                "d/BASE-A/out/#",  # duplicate of the wildcard — must collapse
+                "d/OTHER-CLOUD/out/doorbells/FB1/#",
+                "u/USER/in/#",  # duplicate of the user wildcard
+            ],
+        )
+        assert topics == [
+            "d/BASE-A/out/#",
+            "u/USER/in/#",
+            "d/OTHER-CLOUD/out/doorbells/FB1/#",
+        ]
 
 
 class TestTopicRouter:

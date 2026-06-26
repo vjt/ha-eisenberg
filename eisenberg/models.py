@@ -294,5 +294,10 @@ class DeviceInfo(BaseModel):
     model_id: str = Field(alias="modelId")
     x_cloud_id: str = Field(alias="xCloudId")
     user_id: str | None = Field(None, alias="userId")
+    # Exact MQTT topic filters this device declares it will publish on.
+    # Authoritative across device types (cameras, doorbells, base-less
+    # cameras) and ACL-safe — the broker grants these even when a broad
+    # `d/{xCloudId}/out/#` wildcard would be refused. Empty when absent.
+    allowed_mqtt_topics: list[str] = Field(default_factory=list, alias="allowedMqttTopics")
     properties: dict[str, Any] | None = None
     connectivity: dict[str, Any] | None = None

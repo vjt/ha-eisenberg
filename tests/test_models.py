@@ -288,6 +288,35 @@ class TestDeviceInfo:
         assert info.model_id == "VMC2052A"
         assert info.x_cloud_id == "XCLOUD-0000-000-000000000"
 
+    def test_allowed_mqtt_topics_parsed(self) -> None:
+        info = DeviceInfo.model_validate(
+            {
+                "deviceId": "FB1001A-DOOR",
+                "deviceName": "Front Door",
+                "modelId": "FB1001A",
+                "xCloudId": "XCLOUD-DOORBELL",
+                "allowedMqttTopics": [
+                    "d/XCLOUD-DOORBELL/out/doorbells/FB1001A-DOOR/#",
+                    "u/USER123/in/feed/live",
+                ],
+            }
+        )
+        assert info.allowed_mqtt_topics == [
+            "d/XCLOUD-DOORBELL/out/doorbells/FB1001A-DOOR/#",
+            "u/USER123/in/feed/live",
+        ]
+
+    def test_allowed_mqtt_topics_default_empty(self) -> None:
+        info = DeviceInfo.model_validate(
+            {
+                "deviceId": "CAM",
+                "deviceName": "Cam",
+                "modelId": "VMC2052A",
+                "xCloudId": "X",
+            }
+        )
+        assert info.allowed_mqtt_topics == []
+
 
 class TestArloMode:
     def test_known_modes(self) -> None:

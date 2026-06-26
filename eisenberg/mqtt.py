@@ -23,6 +23,7 @@ from .mqtt_codec import (
     parse_connack,
     parse_packet_type,
     parse_publish,
+    parse_suback,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,8 +34,34 @@ PUBLISH = 3
 SUBACK = 9
 PINGRESP = 13
 
+# SUBACK return code signalling the broker refused a topic filter.
+SUBACK_FAILURE = 0x80
+
 # Handler type: async callback(topic, payload_dict)
 EventHandler = Callable[[str, dict[str, Any]], Any]
+
+
+def build_subscribe_topics(
+    x_cloud_ids: list[str],
+    user_id: str,
+    extra_topics: list[str],
+) -> list[str]:
+    """Assemble the ordered, de-duplicated MQTT topic filter list.
+
+    Combines the broad per-base wildcards (`d/{xCloudId}/out/#`) and the
+    user wildcard (`u/{userId}/in/#`) with each device's own declared
+    `allowedMqttTopics`. The device-declared filters are the authoritative
+    set for doorbells and base-less cameras whose events live under a
+    topic root our wildcards don't cover; subscribing to both is harmless
+    (the broker just ACKs each filter independently). Order is stable so
+    SUBACK return codes line up and MQTT logs stay diffable across runs.
+    """
+    topics: list[str] = [f"d/{cid}/out/#" for cid in x_cloud_ids]
+    topics.append(f"u/{user_id}/in/#")
+    for topic in extra_topics:
+        if topic not in topics:
+            topics.append(topic)
+    return topics
 
 
 class TopicRouter:
@@ -77,7 +104,7 @@ class MQTTEventStream:
     """Persistent MQTT connection over WebSocket to Arlo's broker.
 
     Usage:
-        stream = MQTTEventStream(mqtt_url, user_id, token, [x_cloud_id])
+        stream = MQTTEventStream(mqtt_url, user_id, token, [x_cloud_id], extra_topics)
         stream.on("d/+/out/cameras/+/is", handle_camera_state)
         await stream.connect()
         # ... runs until disconnect
@@ -90,6 +117,7 @@ class MQTTEventStream:
         user_id: str,
         token: str,
         x_cloud_ids: list[str],
+        extra_topics: list[str],
         http_session: aiohttp.ClientSession | None = None,
     ) -> None:
         if not x_cloud_ids:
@@ -98,6 +126,7 @@ class MQTTEventStream:
         self._user_id = user_id
         self._token = token
         self._x_cloud_ids = x_cloud_ids
+        self._extra_topics = extra_topics
         self._session = http_session
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._router = TopicRouter()
@@ -153,19 +182,36 @@ class MQTTEventStream:
             await self._ws.close()
             raise ConnectionError(f"MQTT CONNACK failed with rc={rc}")
 
-        # SUBSCRIBE — one device topic per unique xCloudId. Accounts with
-        # cameras on multiple base stations have multiple xCloudIds; if we
-        # subscribe to only one, the other base stations' device events
-        # (battery, signal, connectivity) never reach us.
-        topics = [f"d/{cid}/out/#" for cid in self._x_cloud_ids]
-        topics.append(f"u/{self._user_id}/in/#")
+        # SUBSCRIBE — one wildcard per unique xCloudId (accounts with
+        # cameras on multiple base stations have multiple xCloudIds), the
+        # user wildcard, plus each device's own declared allowedMqttTopics.
+        # Doorbells and base-less cameras can publish under a topic root the
+        # wildcards miss, so the device-declared filters are what actually
+        # delivers their motion/battery/signal events.
+        topics = build_subscribe_topics(self._x_cloud_ids, self._user_id, self._extra_topics)
         subscribe_pkt = build_subscribe(packet_id=1, topics=topics)
         await self._ws.send_bytes(subscribe_pkt)
 
-        # Wait for SUBACK
-        await self._ws.receive()
+        # Wait for SUBACK and verify the broker actually granted each filter.
+        # A 0x80 return code means an ACL refused that topic — the silent
+        # failure mode behind "entities never update". Surface it loudly.
+        suback_msg = await self._ws.receive()
+        suback_data = (
+            suback_msg.data if isinstance(suback_msg.data, bytes) else suback_msg.data.encode()
+        )
+        codes = parse_suback(suback_data)
+        for topic, code in zip(topics, codes, strict=False):
+            if code == SUBACK_FAILURE:
+                _LOGGER.warning("MQTT broker REFUSED subscription to %s", topic)
+            else:
+                _LOGGER.debug("MQTT subscribed to %s (QoS %d granted)", topic, code)
+        if all(code == SUBACK_FAILURE for code in codes) and codes:
+            _LOGGER.error(
+                "MQTT broker refused ALL %d subscriptions — no events will arrive",
+                len(codes),
+            )
 
-        _LOGGER.info("MQTT connected and subscribed to %s", topics)
+        _LOGGER.info("MQTT connected; %d topic filter(s) subscribed", len(topics))
         self._running = True
 
         # Start background tasks
@@ -206,6 +252,10 @@ class MQTTEventStream:
 
                 if pkt_type == PUBLISH:
                     parsed = parse_publish(data)
+                    # Every inbound topic, before routing — the ground truth
+                    # for diagnosing "entities never update": shows exactly
+                    # which resources a device actually publishes on.
+                    _LOGGER.debug("MQTT recv topic=%s", parsed.topic)
                     try:
                         payload = json.loads(parsed.payload)
                     except (json.JSONDecodeError, UnicodeDecodeError):

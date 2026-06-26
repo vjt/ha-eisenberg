@@ -108,6 +108,18 @@ def parse_connack(data: bytes) -> int:
     return data[3]
 
 
+def parse_suback(data: bytes) -> list[int]:
+    """Parse a SUBACK packet into its per-topic return codes.
+
+    The payload is one byte per subscribed topic, in request order:
+    0x00/0x01/0x02 = granted at that QoS, 0x80 = failure (the broker
+    refused the subscription, e.g. an ACL denied that topic filter).
+    """
+    _, idx = _decode_remaining_length(data, 1)
+    idx += 2  # skip the 2-byte packet identifier
+    return list(data[idx:])
+
+
 def parse_publish(data: bytes) -> MQTTPublish:
     """Parse an MQTT PUBLISH packet into topic + payload."""
     _, idx = _decode_remaining_length(data, 1)

@@ -108,6 +108,21 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def devices(self) -> list[DeviceInfo]:
         return self._devices
 
+    def _mqtt_extra_topics(self) -> list[str]:
+        """Union of every device's declared allowedMqttTopics, order-stable.
+
+        These are the authoritative per-device topic filters. Doorbells and
+        base-less cameras publish motion/battery/signal on roots the broad
+        `d/{xCloudId}/out/#` wildcard can miss, so we hand them to the
+        subscriber explicitly. Empty when no device declares any.
+        """
+        topics: list[str] = []
+        for device in self._devices:
+            for topic in device.allowed_mqtt_topics:
+                if topic not in topics:
+                    topics.append(topic)
+        return topics
+
     @property
     def media_dir(self) -> str:
         """Configured media directory key, or empty string for disabled."""
@@ -411,11 +426,19 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         for device in self._devices:
             _LOGGER.info(
-                "  device id=%s name=%r model=%s cloud=%s",
+                "  device id=%s name=%r model=%s cloud=%s mqttTopics=%d",
                 device.device_id,
                 device.device_name,
                 device.model_id,
                 device.x_cloud_id,
+                len(device.allowed_mqtt_topics),
+            )
+            # Full topic list at DEBUG — the map of which resources each
+            # model (camera vs doorbell) actually publishes on.
+            _LOGGER.debug(
+                "  device %s allowedMqttTopics=%s",
+                device.device_id,
+                device.allowed_mqtt_topics,
             )
         if len(x_cloud_ids) > 1:
             _LOGGER.warning(
@@ -432,6 +455,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 user_id=self.client.user_id,
                 token=self.client.token,
                 x_cloud_ids=x_cloud_ids,
+                extra_topics=self._mqtt_extra_topics(),
                 http_session=self._http_session,
             )
             self._register_mqtt_handlers()
@@ -486,9 +510,21 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # because `properties` is a superset of the partial-update shape.
         self._mqtt.on("d/+/out/cameras/+/privacyZones/is", self._handle_camera_state)
 
-        # Snapshot available
+        # Doorbell state updates. Video doorbells (e.g. FB1001A) are a
+        # distinct `doorbells` resource — not `cameras` — and publish their
+        # motionDetected/battery/signal on this topic. Same payload shape as
+        # cameras, so the same handler parses it; topic part[4] is still the
+        # deviceId. Without this, doorbell entities never update (issue #10).
+        self._mqtt.on("d/+/out/doorbells/+/is", self._handle_camera_state)
+        self._mqtt.on("d/+/out/doorbells/+/privacyZones/is", self._handle_camera_state)
+
+        # Snapshot available — cameras and doorbells both emit this.
         self._mqtt.on(
             "d/+/out/cameras/+/fullFrameSnapshotAvailable",
+            self._handle_snapshot,
+        )
+        self._mqtt.on(
+            "d/+/out/doorbells/+/fullFrameSnapshotAvailable",
             self._handle_snapshot,
         )
 
@@ -865,6 +901,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         user_id=self.client.user_id,
                         token=self.client.token,
                         x_cloud_ids=x_cloud_ids,
+                        extra_topics=self._mqtt_extra_topics(),
                         http_session=self._http_session,
                     )
                     self._register_mqtt_handlers()
