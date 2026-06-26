@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.3 — 2026-06-26
+
+### Fixed
+
+- **Doorbells now report state.** Video doorbells (e.g. FB1001A) publish
+  on the `doorbells` MQTT resource, not `cameras` — only `cameras/+/is`
+  was handled, so doorbell motion/battery/signal never updated. Added
+  `doorbells/+/is`, `privacyZones/is` and snapshot handlers. Part of #10.
+
+### Added
+
+- **Subscribe to each device's declared `allowedMqttTopics`** on top of
+  the `d/{xCloudId}/out/#` wildcards. Covers doorbells and base-less
+  cameras whose events live under a topic root the wildcards miss.
+- **SUBACK return codes are now checked.** A broker that refuses a topic
+  filter (ACL) is logged at WARNING instead of failing silently — the
+  likely cause of "entities never update" on some accounts.
+- **More MQTT debug logging:** every received topic, and each device's
+  `allowedMqttTopics` at startup. `manifest.json` now lists the
+  `eisenberg` logger so HA's one-click debug toggle covers the library.
+
 ## 0.3.2 — 2026-06-19
 
 ### Fixed

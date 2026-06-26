@@ -1,6 +1,6 @@
 [project]
 name = "pyeisenberg"
-version = "0.3.2"
+version = "0.3.3"
 description = "Async Python client for the Arlo camera API"
 readme = "README.md"
 requires-python = ">=3.13"
