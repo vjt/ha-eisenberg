@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.5 — 2026-06-27
+
+### Added
+
+- **Per-location security modes (#16).** Modes, revisions and the
+  security-mode select are tracked per Arlo location instead of a single
+  global `locations[0]`. A device maps to its location via the location's
+  `gatewayDeviceIds` (Arlo returns these as `{ownerId}_{deviceId}`; the
+  resolver matches the suffix, mirroring pyaarlo). Snapshot gating and mode
+  changes now respect each camera's own location. Multi-location accounts get
+  one security-mode select per location; single-location accounts are
+  unchanged (one select, original entity preserved). Fixes on-demand snapshots
+  being rejected with error 4006 on multi-location accounts.
+- **MQTT SUBACK observability (#15).** The coordinator logs a SUBACK summary —
+  granted/refused counts, the refused topic filters, and the `u/{userId}/in/#`
+  user-topic verdict — under the `custom_components.eisenberg` logger, so a
+  standard "Enable debug logging" run surfaces it. Previously subscription
+  grants were logged only on the `eisenberg.*` library logger, which the
+  per-integration debug toggle cannot elevate, making partial broker refusals
+  look like total failures.
+
+### Fixed
+
+- **MQTT WebSocket framing (#13).** Buffer inbound bytes and decode every MQTT
+  packet per WebSocket frame, including the CONNACK/SUBACK handshake reads.
+  Coalesced or split PUBLISHes (e.g. snapshot delivery) are no longer dropped.
+- **Base station connectivity sensors (#14).** Resolve connectivity by the
+  parent base station (`parentId`), falling back to the device's own id, so
+  the `*_base_station_connectivity` sensors no longer stay `unknown` on
+  accounts with real (separate) base stations.
+
 ## 0.3.4 — 2026-06-27
 
 ### Fixed
