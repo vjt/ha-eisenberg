@@ -71,11 +71,17 @@ def resolve_location_for_device(
     A device's gateway is its base station (`parentId`), or its own `deviceId`
     when it is base-less (e.g. an Essential XL, which is its own base). Returns
     None when no location claims the gateway.
+
+    Arlo returns each gatewayDeviceId as "{ownerId}_{deviceId}", while our
+    gateway ids are bare deviceIds, so we compare against the suffix after the
+    first underscore as well (mirrors pyaarlo's location.py prefix-strip).
     """
     gateway = device.parent_id or device.device_id
     for location in locations:
-        if gateway in location.gateway_device_ids:
-            return location
+        for gid in location.gateway_device_ids:
+            suffix = gid.split("_", 1)[-1] if "_" in gid else gid
+            if gateway in (gid, suffix):
+                return location
     return None
 
 

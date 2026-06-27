@@ -43,3 +43,14 @@ class TestResolveLocationForDevice:
     def test_no_match_returns_none(self) -> None:
         dev = _device("CAM", parent_id="BASE-UNKNOWN")
         assert resolve_location_for_device(dev, [LOC_A, LOC_B]) is None
+
+    def test_resolves_via_owner_prefixed_gateway_id(self) -> None:
+        # Real Arlo returns gatewayDeviceIds as "{ownerId}_{deviceId}"; a
+        # base-less camera's gateway is its bare deviceId. pyaarlo strips the
+        # prefix (location.py:226) — we must match the same way.
+        loc = LocationState(
+            location_id="loc",
+            gateway_device_ids=["KRQFS-207-166989294_AGS5537BD0D0D"],
+        )
+        dev = _device("AGS5537BD0D0D", parent_id=None)
+        assert resolve_location_for_device(dev, [loc]) is loc
