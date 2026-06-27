@@ -180,8 +180,14 @@ the live single-location account this:
 3. Confirms #16 single-location no-regression: exactly one security-mode select,
    snapshot gating unchanged, entities populate.
 
-If the live `get_locations` shape diverges from pyaarlo's `gatewayDeviceIds`,
-revisit the #16 resolution before release.
+**Verified live 2026-06-27.** The instrumentation emits correctly
+(`MQTT SUBACK: 2 granted, 0 refused`; `user topic … = GRANTED`; single-location
+`Initial mode`), exactly one `eisenberg_security_mode` select (no orphan), no
+errors. The live `get_locations` **diverged** from the bare-id assumption:
+`gatewayDeviceIds` are `{ownerId}_{deviceId}` (e.g.
+`KRQFS-207-166989294_AGS5537BD0D0D`). `resolve_location_for_device` was fixed to
+match the suffix after the first `_` (mirrors pyaarlo); re-verified live — the
+device now resolves to its location with no fallback.
 
 ## Release
 
