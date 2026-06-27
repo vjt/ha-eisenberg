@@ -294,6 +294,12 @@ class DeviceInfo(BaseModel):
     model_id: str = Field(alias="modelId")
     x_cloud_id: str = Field(alias="xCloudId")
     user_id: str | None = Field(None, alias="userId")
+    # The controlling base station's deviceId. Base-station heartbeats
+    # (d/{xCloudId}/out/basestation/is) carry the gateway id in `from`,
+    # which equals this parentId — so connectivity is resolved by parent,
+    # not the camera's own id. Absent for base-less cameras (the camera is
+    # its own gateway), in which case callers fall back to device_id.
+    parent_id: str | None = Field(None, alias="parentId")
     # Exact MQTT topic filters this device declares it will publish on.
     # Authoritative across device types (cameras, doorbells, base-less
     # cameras) and ACL-safe — the broker grants these even when a broad

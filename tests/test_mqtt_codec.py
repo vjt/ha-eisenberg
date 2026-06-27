@@ -10,6 +10,10 @@ from eisenberg.mqtt_codec import (
     parse_packet_type,
     parse_publish,
     parse_suback,
+    split_packets,
+)
+from eisenberg.mqtt_codec import (
+    _encode_remaining_length as encode_remaining_length,
 )
 
 
@@ -136,3 +140,66 @@ class TestParsePublish:
         result = parse_publish(pkt)
         assert result.topic == "t"
         assert result.payload == payload
+
+
+def _publish_packet(topic: str, payload: bytes) -> bytes:
+    """A complete QoS-0 PUBLISH packet for the given topic/payload."""
+    tb = topic.encode()
+    remaining = len(tb).to_bytes(2, "big") + tb + payload
+    return bytes([0x30]) + encode_remaining_length(len(remaining)) + remaining
+
+
+class TestSplitPackets:
+    """Issue #13: MQTT-over-WebSocket does not align control packets to WS
+    frame boundaries. A frame may carry several packets, and one packet may
+    span frames. split_packets() must extract every complete packet and hand
+    back the trailing partial bytes to prepend to the next frame."""
+
+    def test_empty_buffer(self) -> None:
+        assert split_packets(b"") == ([], b"")
+
+    def test_single_complete_packet(self) -> None:
+        p = _publish_packet("a", b'{"n":1}')
+        assert split_packets(p) == ([p], b"")
+
+    def test_two_packets_in_one_buffer(self) -> None:
+        p1 = _publish_packet("a", b'{"n":1}')
+        p2 = _publish_packet("b", b'{"n":2}')
+        packets, rem = split_packets(p1 + p2)
+        assert packets == [p1, p2]
+        assert rem == b""
+
+    def test_incomplete_payload_held_as_remainder(self) -> None:
+        p = _publish_packet("d/CLOUD/out/x", b'{"big":"payload"}')
+        partial = p[:-3]
+        packets, rem = split_packets(partial)
+        assert packets == []
+        assert rem == partial
+
+    def test_partial_header_byte_held(self) -> None:
+        packets, rem = split_packets(bytes([0x30]))
+        assert packets == []
+        assert rem == bytes([0x30])
+
+    def test_complete_packet_plus_partial_next(self) -> None:
+        p1 = _publish_packet("a", b"{}")
+        p2 = _publish_packet("b", b'{"x":1}')
+        packets, rem = split_packets(p1 + p2[:2])
+        assert packets == [p1]
+        assert rem == p2[:2]
+
+    def test_multibyte_remaining_length(self) -> None:
+        # A 200-byte payload forces a 2-byte remaining-length varint.
+        p = _publish_packet("t", b"x" * 200)
+        assert len(p) > 200
+        packets, rem = split_packets(p + bytes([0x30]))
+        assert packets == [p]
+        assert rem == bytes([0x30])
+
+    def test_incomplete_varint_held(self) -> None:
+        # Header byte + a remaining-length byte with the continuation bit set
+        # but no follow-on byte yet: cannot know the length, so hold it all.
+        buf = bytes([0x30, 0x80])
+        packets, rem = split_packets(buf)
+        assert packets == []
+        assert rem == buf

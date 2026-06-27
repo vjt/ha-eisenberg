@@ -98,6 +98,54 @@ def build_disconnect() -> bytes:
     return bytes([0xE0, 0x00])
 
 
+def split_packets(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """Split a raw byte buffer into complete MQTT packets plus a remainder.
+
+    MQTT-over-WebSocket does NOT align control packets to WebSocket frame
+    boundaries: a single frame may carry several packets, and one packet may
+    span multiple frames (MQTT 3.1.1 over WS, §section "WebSocket framing").
+    Treating one frame as one packet silently drops everything after the
+    first — the failure mode behind snapshots/events never arriving on busy
+    accounts (issue #13).
+
+    Returns ``(packets, remainder)`` where ``packets`` is every fully-present
+    packet in order and ``remainder`` is the trailing incomplete bytes the
+    caller must prepend to the next chunk. A buffer that doesn't yet contain
+    a full fixed header (type byte + complete remaining-length varint) or a
+    full payload yields no packet and is returned whole as the remainder.
+    """
+    packets: list[bytes] = []
+    idx = 0
+    n = len(buffer)
+    while idx < n:
+        # Decode the remaining-length varint that starts one byte after the
+        # fixed-header type byte. Bail (keep as remainder) the moment we run
+        # out of bytes mid-varint — we can't know the packet length yet.
+        remaining = 0
+        multiplier = 1
+        pos = idx + 1
+        complete = False
+        while pos < n:
+            byte = buffer[pos]
+            remaining += (byte & 0x7F) * multiplier
+            pos += 1
+            if (byte & 0x80) == 0:
+                complete = True
+                break
+            multiplier *= 128
+            if multiplier > 128**3:  # varint is max 4 bytes per spec
+                complete = True
+                break
+        if not complete:
+            break
+        end = pos + remaining
+        if end > n:
+            break  # full payload not arrived yet
+        packets.append(bytes(buffer[idx:end]))
+        idx = end
+    return packets, bytes(buffer[idx:])
+
+
 def parse_packet_type(data: bytes) -> int:
     """Extract packet type from first byte (upper 4 bits)."""
     return (data[0] >> 4) & 0x0F
