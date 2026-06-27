@@ -25,6 +25,7 @@ from .mqtt_codec import (
     parse_publish,
     parse_suback,
     split_packets,
+    take_packet,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -149,6 +150,9 @@ class MQTTEventStream:
 
     async def connect(self) -> None:
         """Connect to MQTT broker, subscribe, and start listening."""
+        # Drop any bytes left over from a previous session — a reconnect on
+        # the same instance must start framing from a clean slate.
+        self._rx_buffer = bytearray()
         owns_session = False
         if self._session is None:
             self._session = aiohttp.ClientSession()
@@ -178,10 +182,11 @@ class MQTTEventStream:
         )
         await self._ws.send_bytes(connect_pkt)
 
-        # Wait for CONNACK
-        msg = await self._ws.receive()
-        data = msg.data if isinstance(msg.data, bytes) else msg.data.encode()
-        rc = parse_connack(data)
+        # Wait for CONNACK. Read through the same byte buffer as everything
+        # else — MQTT packets aren't aligned to WS frames, so the handshake
+        # must not assume one packet per frame either (issue #13).
+        connack = await self._read_packet()
+        rc = parse_connack(connack)
         if rc != 0:
             await self._ws.close()
             raise ConnectionError(f"MQTT CONNACK failed with rc={rc}")
@@ -196,14 +201,16 @@ class MQTTEventStream:
         subscribe_pkt = build_subscribe(packet_id=1, topics=topics)
         await self._ws.send_bytes(subscribe_pkt)
 
-        # Wait for SUBACK and verify the broker actually granted each filter.
-        # A 0x80 return code means an ACL refused that topic — the silent
-        # failure mode behind "entities never update". Surface it loudly.
-        suback_msg = await self._ws.receive()
-        suback_data = (
-            suback_msg.data if isinstance(suback_msg.data, bytes) else suback_msg.data.encode()
-        )
-        codes = parse_suback(suback_data)
+        # Read until the SUBACK, dispatching any PUBLISH that races ahead of
+        # it (and leaving anything coalesced *after* it in the buffer for the
+        # listen loop). A 0x80 return code means an ACL refused that topic —
+        # the silent failure mode behind "entities never update".
+        while True:
+            packet = await self._read_packet()
+            if parse_packet_type(packet) == SUBACK:
+                codes = parse_suback(packet)
+                break
+            await self._dispatch_packet(packet)
         for topic, code in zip(topics, codes, strict=False):
             if code == SUBACK_FAILURE:
                 _LOGGER.warning("MQTT broker REFUSED subscription to %s", topic)
@@ -239,8 +246,38 @@ class MQTTEventStream:
             await self._ws.close()
             self._ws = None
 
+    async def _read_packet(self) -> bytes:
+        """Return the next complete MQTT packet, buffering across WS frames.
+
+        Used during the connect handshake so CONNACK/SUBACK reads don't
+        assume one packet per frame and don't discard coalesced trailing
+        bytes (issue #13). Raises ConnectionError if the socket closes first.
+        """
+        while True:
+            packet, rest = take_packet(bytes(self._rx_buffer))
+            if packet is not None:
+                self._rx_buffer = bytearray(rest)
+                return packet
+            if self._ws is None:
+                raise ConnectionError("MQTT socket gone during handshake")
+            msg = await self._ws.receive()
+            if msg.type == aiohttp.WSMsgType.BINARY:
+                self._rx_buffer += msg.data
+            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                raise ConnectionError("MQTT socket closed during handshake")
+
+    async def _drain_buffer(self) -> None:
+        """Dispatch every complete packet sitting in the buffer."""
+        packets, remainder = split_packets(bytes(self._rx_buffer))
+        self._rx_buffer = bytearray(remainder)
+        for packet in packets:
+            await self._dispatch_packet(packet)
+
     async def _listen_loop(self) -> None:
         """Read MQTT packets and dispatch PUBLISH messages."""
+        # The handshake may have left packets in the buffer (e.g. a PUBLISH
+        # coalesced into the SUBACK frame); flush them before blocking.
+        await self._drain_buffer()
         while self._running and self._ws and not self._ws.closed:
             try:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=90)
@@ -255,10 +292,7 @@ class MQTTEventStream:
                 # part of one. Buffer, then dispatch every complete packet
                 # and keep the trailing partial for the next frame.
                 self._rx_buffer += msg.data
-                packets, remainder = split_packets(bytes(self._rx_buffer))
-                self._rx_buffer = bytearray(remainder)
-                for packet in packets:
-                    await self._dispatch_packet(packet)
+                await self._drain_buffer()
 
             elif msg.type in (
                 aiohttp.WSMsgType.CLOSED,

@@ -11,6 +11,7 @@ from eisenberg.mqtt_codec import (
     parse_publish,
     parse_suback,
     split_packets,
+    take_packet,
 )
 from eisenberg.mqtt_codec import (
     _encode_remaining_length as encode_remaining_length,
@@ -203,3 +204,33 @@ class TestSplitPackets:
         packets, rem = split_packets(buf)
         assert packets == []
         assert rem == buf
+
+
+class TestTakePacket:
+    """take_packet consumes exactly one complete packet off the front and
+    returns the untouched remainder — the primitive the connect handshake
+    uses so bytes trailing a CONNACK/SUBACK (e.g. a coalesced PUBLISH) are
+    preserved instead of discarded (issue #13)."""
+
+    def test_single_packet_no_remainder(self) -> None:
+        p = _publish_packet("a", b'{"n":1}')
+        pkt, rest = take_packet(p)
+        assert pkt == p
+        assert rest == b""
+
+    def test_packet_plus_trailing_preserved(self) -> None:
+        p1 = _publish_packet("a", b"{}")
+        p2 = _publish_packet("b", b'{"x":1}')
+        pkt, rest = take_packet(p1 + p2)
+        assert pkt == p1
+        assert rest == p2  # the whole next packet is left untouched
+
+    def test_incomplete_returns_none_and_holds_buffer(self) -> None:
+        p = _publish_packet("d/CLOUD/out/x", b'{"big":"payload"}')
+        partial = p[:-2]
+        pkt, rest = take_packet(partial)
+        assert pkt is None
+        assert rest == partial
+
+    def test_empty_buffer(self) -> None:
+        assert take_packet(b"") == (None, b"")
