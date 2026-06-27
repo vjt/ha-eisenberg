@@ -173,7 +173,12 @@ class BasestationConnectivity(CoordinatorEntity[EisenbergCoordinator], BinarySen
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        state = self.coordinator.basestation_connection.get(self._device.device_id)
+        # Connectivity is stored under the base station's gateway id (the
+        # heartbeat `from` field == this camera's parentId). Resolve by
+        # parent; base-less cameras have no parentId and publish under their
+        # own id, so fall back to device_id for them.
+        key = self._device.parent_id or self._device.device_id
+        state = self.coordinator.basestation_connection.get(key)
         if state is not None:
             self._attr_is_on = state == "available"
         self.async_write_ha_state()
