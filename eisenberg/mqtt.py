@@ -24,6 +24,7 @@ from .mqtt_codec import (
     parse_packet_type,
     parse_publish,
     parse_suback,
+    split_packets,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -134,6 +135,9 @@ class MQTTEventStream:
         self._listen_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
         self._on_disconnect: Callable[[], Any] | None = None
+        # Inbound byte accumulator. MQTT packets are not aligned to WS frame
+        # boundaries, so we buffer and decode complete packets ourselves.
+        self._rx_buffer = bytearray()
 
     def on(self, topic_pattern: str, handler: EventHandler) -> None:
         """Register a handler for a topic pattern."""
@@ -247,47 +251,14 @@ class MQTTEventStream:
                 return
 
             if msg.type == aiohttp.WSMsgType.BINARY:
-                data = msg.data
-                pkt_type = parse_packet_type(data)
-
-                if pkt_type == PUBLISH:
-                    parsed = parse_publish(data)
-                    # Every inbound topic, before routing — the ground truth
-                    # for diagnosing "entities never update": shows exactly
-                    # which resources a device actually publishes on.
-                    _LOGGER.debug("MQTT recv topic=%s", parsed.topic)
-                    try:
-                        payload = json.loads(parsed.payload)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        _LOGGER.warning(
-                            "Non-JSON MQTT payload on %s: %s",
-                            parsed.topic,
-                            parsed.payload[:200],
-                        )
-                        continue
-
-                    handlers = self._router.match(parsed.topic)
-                    if handlers:
-                        for handler in handlers:
-                            try:
-                                result = handler(parsed.topic, payload)
-                                if asyncio.iscoroutine(result):
-                                    await result
-                            except Exception:
-                                _LOGGER.exception(
-                                    "Error in MQTT handler for %s",
-                                    parsed.topic,
-                                )
-                    else:
-                        _LOGGER.info(
-                            "Unhandled MQTT topic %s: %s",
-                            parsed.topic,
-                            json.dumps(payload)[:500],
-                        )
-                elif pkt_type == PINGRESP:
-                    pass  # Expected keepalive response
-                else:
-                    _LOGGER.debug("MQTT packet type %d", pkt_type)
+                # A single WS frame may hold several MQTT packets, or only
+                # part of one. Buffer, then dispatch every complete packet
+                # and keep the trailing partial for the next frame.
+                self._rx_buffer += msg.data
+                packets, remainder = split_packets(bytes(self._rx_buffer))
+                self._rx_buffer = bytearray(remainder)
+                for packet in packets:
+                    await self._dispatch_packet(packet)
 
             elif msg.type in (
                 aiohttp.WSMsgType.CLOSED,
@@ -301,6 +272,49 @@ class MQTTEventStream:
             result = self._on_disconnect()
             if asyncio.iscoroutine(result):
                 await result
+
+    async def _dispatch_packet(self, data: bytes) -> None:
+        """Route one complete MQTT packet to its handlers."""
+        pkt_type = parse_packet_type(data)
+
+        if pkt_type == PUBLISH:
+            parsed = parse_publish(data)
+            # Every inbound topic, before routing — the ground truth for
+            # diagnosing "entities never update": shows exactly which
+            # resources a device actually publishes on.
+            _LOGGER.debug("MQTT recv topic=%s", parsed.topic)
+            try:
+                payload = json.loads(parsed.payload)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                _LOGGER.warning(
+                    "Non-JSON MQTT payload on %s: %s",
+                    parsed.topic,
+                    parsed.payload[:200],
+                )
+                return
+
+            handlers = self._router.match(parsed.topic)
+            if handlers:
+                for handler in handlers:
+                    try:
+                        result = handler(parsed.topic, payload)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception:
+                        _LOGGER.exception(
+                            "Error in MQTT handler for %s",
+                            parsed.topic,
+                        )
+            else:
+                _LOGGER.info(
+                    "Unhandled MQTT topic %s: %s",
+                    parsed.topic,
+                    json.dumps(payload)[:500],
+                )
+        elif pkt_type == PINGRESP:
+            pass  # Expected keepalive response
+        else:
+            _LOGGER.debug("MQTT packet type %d", pkt_type)
 
     async def _keepalive_loop(self) -> None:
         """Send PINGREQ every 50 seconds (keepalive is 60s)."""
