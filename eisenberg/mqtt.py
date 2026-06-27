@@ -15,6 +15,7 @@ from typing import Any
 
 import aiohttp
 
+from .models import SubscribeOutcome, TopicResult
 from .mqtt_codec import (
     build_connect,
     build_disconnect,
@@ -139,6 +140,9 @@ class MQTTEventStream:
         # Inbound byte accumulator. MQTT packets are not aligned to WS frame
         # boundaries, so we buffer and decode complete packets ourselves.
         self._rx_buffer = bytearray()
+        # Per-topic SUBACK outcome of the last connect(), for the coordinator
+        # to log a grant/refuse/user-topic summary in a reachable namespace.
+        self.subscribe_outcome: SubscribeOutcome | None = None
 
     def on(self, topic_pattern: str, handler: EventHandler) -> None:
         """Register a handler for a topic pattern."""
@@ -211,6 +215,12 @@ class MQTTEventStream:
                 codes = parse_suback(packet)
                 break
             await self._dispatch_packet(packet)
+        self.subscribe_outcome = SubscribeOutcome(
+            results=[
+                TopicResult(topic=topic, code=code, granted=code != SUBACK_FAILURE)
+                for topic, code in zip(topics, codes, strict=False)
+            ]
+        )
         for topic, code in zip(topics, codes, strict=False):
             if code == SUBACK_FAILURE:
                 _LOGGER.warning("MQTT broker REFUSED subscription to %s", topic)

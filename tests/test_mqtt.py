@@ -106,6 +106,8 @@ CONNACK_OK = bytes([0x20, 0x02, 0x00, 0x00])
 # SUBACK for the two filters connect() subscribes (base wildcard + user
 # wildcard), both granted at QoS 0. remaining length 4 = 2-byte id + 2 codes.
 SUBACK_TWO_GRANTED = bytes([0x90, 0x04, 0x00, 0x01, 0x00, 0x00])
+# base wildcard granted (QoS 0), user wildcard refused (0x80).
+SUBACK_GRANT_REFUSE = bytes([0x90, 0x04, 0x00, 0x01, 0x00, 0x80])
 SNAPSHOT_TOPIC = "d/BASE/out/cameras/CAM/fullFrameSnapshotAvailable"
 
 
@@ -194,3 +196,21 @@ class TestHandshakeFraming:
         stream = await _stream_with_frames([CONNACK_OK, SUBACK_TWO_GRANTED], received)
         await _run_until_drained(stream)
         assert received == []  # nothing to deliver, but no crash either
+
+
+class TestSubscribeOutcome:
+    async def test_connect_records_per_topic_outcome(self) -> None:
+        received: list[str] = []
+        stream = await _stream_with_frames([CONNACK_OK, SUBACK_GRANT_REFUSE], received)
+        await _run_until_drained(stream)
+
+        outcome = stream.subscribe_outcome
+        assert outcome is not None
+        assert outcome.granted_count == 1
+        assert outcome.refused_count == 1
+        assert outcome.refused_topics == ["u/USER/in/#"]
+        base = outcome.result_for("d/BASE/out/#")
+        user = outcome.result_for("u/USER/in/#")
+        assert base is not None and base.granted is True
+        assert user is not None and user.granted is False
+        assert user.code == 0x80

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
@@ -38,6 +38,7 @@ from eisenberg.models import (
     ActiveMode,
     BasestationState,
     DeviceState,
+    LocationState,
     MediaUpload,
     ModeChangeEvent,
     MotionEvent,
@@ -60,6 +61,22 @@ _LOGGER = logging.getLogger(__name__)
 
 # Health check interval (token refresh, device sync)
 HEALTH_CHECK_INTERVAL = timedelta(minutes=30)
+
+
+def resolve_location_for_device(
+    device: DeviceInfo, locations: Iterable[LocationState]
+) -> LocationState | None:
+    """Return the location whose gateway list contains this device's gateway.
+
+    A device's gateway is its base station (`parentId`), or its own `deviceId`
+    when it is base-less (e.g. an Essential XL, which is its own base). Returns
+    None when no location claims the gateway.
+    """
+    gateway = device.parent_id or device.device_id
+    for location in locations:
+        if gateway in location.gateway_device_ids:
+            return location
+    return None
 
 
 class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -86,13 +103,13 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_states: dict[str, DeviceState] = {}
         self.siren_states: dict[str, SirenState] = {}
         self.spotlight_states: dict[str, SpotlightState] = {}
-        # Mode is tracked at the location level via Arlo's v3 automation
-        # API. We learn the location_id and the current mode + revision at
-        # startup so the select entity is responsive immediately and the
-        # PUT revision counter stays in sync with the server.
-        self.active_mode: str | None = None
-        self.location_id: str | None = None
-        self._mode_revision: int = 1
+        # Mode is scoped per location in Arlo's v3 automation API. We keep one
+        # LocationState per location (identity + gateway membership + current
+        # mode + revision), learned at startup, so each location's select is
+        # responsive immediately and its PUT revision counter stays in sync.
+        # A device maps to a location via its gateway (parentId, or its own id
+        # when base-less); see resolve_location_for_device / location_for_device.
+        self.locations: dict[str, LocationState] = {}
         self.latest_snapshots: dict[str, str] = {}  # device_id -> URL
         self.latest_thumbnails: dict[str, str] = {}  # device_id -> URL or path
         # Most recent image bytes per device. Cached so the dashboard tile
@@ -303,50 +320,124 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._login_silent()
             return await op()
 
-    def _set_active_mode(self, mode: str) -> None:
-        """Update active mode in-memory.
+    def location_for_device(self, device: DeviceInfo) -> LocationState | None:
+        """Resolve a device to its location, falling back when unmatched.
 
-        The v3 endpoint is the source of truth and we read it at boot, so
-        no config-entry persistence is needed — the previous shim is gone.
+        When no location claims the device's gateway, fall back to the first
+        location so single-location accounts (and accounts where Arlo omitted
+        gatewayDeviceIds) still gate/track correctly. The fallback is loud only
+        when there is real ambiguity (more than one location).
         """
-        self.active_mode = mode
+        match = resolve_location_for_device(device, self.locations.values())
+        if match is not None:
+            return match
+        if not self.locations:
+            return None
+        fallback = next(iter(self.locations.values()))
+        gateway = device.parent_id or device.device_id
+        if len(self.locations) > 1:
+            _LOGGER.warning(
+                "Device %s (gateway %s) matched no location's gatewayDeviceIds; "
+                "falling back to location %s",
+                device.device_id,
+                gateway,
+                fallback.location_id,
+            )
+        else:
+            _LOGGER.debug(
+                "Device %s (gateway %s) not in gatewayDeviceIds; using sole location %s",
+                device.device_id,
+                gateway,
+                fallback.location_id,
+            )
+        return fallback
 
-    async def async_set_active_mode(self, mode: str) -> None:
-        """Set the security mode via the v3 location API.
+    def mode_for_device(self, device_id: str) -> str | None:
+        """The active security mode of the device's location, or None."""
+        device = next((d for d in self._devices if d.device_id == device_id), None)
+        if device is None:
+            return None
+        location = self.location_for_device(device)
+        return location.active_mode if location is not None else None
 
-        Pushes the new mode + current revision counter, then stores the
-        revision the server returns. MQTT will publish the change shortly
-        after, but we update self.active_mode optimistically so the UI
-        reflects the request immediately.
+    def _apply_mode(self, location_id: str | None, mode: str) -> None:
+        """Record a mode change from an MQTT event onto the right location.
 
-        On any failure (typically a stale revision after another client
-        changed the mode), refetch the live revision from the server and
-        retry once. Beyond that, surface the original error.
+        Events that carry a locationId route precisely. Events without one are
+        only safe to apply when there is exactly one location; on multi-location
+        accounts they are ambiguous and ignored rather than corrupting state.
         """
-        if self.location_id is None:
-            raise RuntimeError("location_id not initialised — cannot set mode")
+        if location_id is not None:
+            location = self.locations.get(location_id)
+            if location is not None:
+                location.active_mode = mode
+            else:
+                _LOGGER.info("Mode event for unknown location %s: %s", location_id, mode)
+            return
+        if len(self.locations) == 1:
+            next(iter(self.locations.values())).active_mode = mode
+        elif len(self.locations) > 1:
+            _LOGGER.debug(
+                "Ambiguous mode push (no locationId) on multi-location account; ignoring"
+            )
+
+    def _log_subscribe_outcome(self) -> None:
+        """Log the MQTT SUBACK summary in this (custom_components.eisenberg)
+        namespace so HA's per-integration debug toggle surfaces grants,
+        refusals and the user-topic verdict. The library-level eisenberg.mqtt
+        grant logs sit in a namespace that toggle cannot reach.
+        """
+        if self._mqtt is None or self._mqtt.subscribe_outcome is None:
+            return
+        outcome = self._mqtt.subscribe_outcome
+        _LOGGER.info(
+            "MQTT SUBACK: %d granted, %d refused of %d",
+            outcome.granted_count,
+            outcome.refused_count,
+            len(outcome.results),
+        )
+        if outcome.refused_topics:
+            _LOGGER.warning("MQTT refused topic filters: %s", outcome.refused_topics)
+        user_topic = f"u/{self.client.user_id}/in/#"
+        result = outcome.result_for(user_topic)
+        verdict = "ABSENT" if result is None else ("GRANTED" if result.granted else "REFUSED")
+        _LOGGER.info("MQTT user topic %s = %s", user_topic, verdict)
+
+    async def async_set_active_mode(self, location_id: str, mode: str) -> None:
+        """Set the security mode of one location via the v3 location API.
+
+        Pushes the new mode + that location's revision counter, then stores the
+        revision the server returns. MQTT publishes the change shortly after,
+        but we update the location optimistically so the UI reflects the
+        request immediately.
+
+        On any failure (typically a stale revision after another client changed
+        the mode), refetch the live revision and retry once. Beyond that,
+        surface the original error.
+        """
+        location = self.locations.get(location_id)
+        if location is None:
+            raise RuntimeError(f"Unknown location {location_id} — cannot set mode")
 
         from eisenberg import APIError
 
-        location_id = self.location_id
-
         async def _do_set() -> Any:
-            return await self.client.set_active_mode(location_id, mode, self._mode_revision)
+            return await self.client.set_active_mode(location_id, mode, location.mode_revision)
 
         try:
             result = await self.call_with_session_retry("set_active_mode", _do_set)
         except APIError:
             _LOGGER.info("set_active_mode failed, refreshing revision and retrying once")
             state = await self.client.get_active_mode(location_id)
-            self._mode_revision = state.revision or 1
+            location.mode_revision = state.revision or 1
             result = await self.call_with_session_retry("set_active_mode", _do_set)
 
         if result.revision:
-            self._mode_revision = result.revision
+            location.mode_revision = result.revision
         if result.properties is not None:
-            self.active_mode = result.properties.mode
+            location.active_mode = result.properties.mode
         else:
-            self.active_mode = mode
+            location.active_mode = mode
         self.async_set_updated_data(self.data or {})
 
     async def _save_cookies(self) -> None:
@@ -460,32 +551,58 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._register_mqtt_handlers()
             await self._mqtt.connect()
+            self._log_subscribe_outcome()
 
         # Discover location + current mode + revision via v3 endpoints.
         # This runs before snapshot requests so we can skip them when the
         # camera is disarmed (Arlo refuses with error 4006).
         try:
-            locations = await self.client.get_locations()
-            if locations:
-                self.location_id = locations[0].location_id
-                state = await self.client.get_active_mode(self.location_id)
-                self._mode_revision = state.revision or 1
-                if state.properties is not None:
-                    self.active_mode = state.properties.mode
+            self.locations = {}
+            for info in await self.client.get_locations():
+                location = LocationState.from_info(info)
+                try:
+                    state = await self.client.get_active_mode(info.location_id)
+                    location.mode_revision = state.revision or 1
+                    if state.properties is not None:
+                        location.active_mode = state.properties.mode
+                except Exception:
+                    _LOGGER.warning(
+                        "Could not fetch mode for location %s",
+                        info.location_id,
+                        exc_info=True,
+                    )
+                self.locations[info.location_id] = location
+            if len(self.locations) > 1:
+                _LOGGER.info(
+                    "Discovered %d locations: %s",
+                    len(self.locations),
+                    {
+                        loc.location_id: {
+                            "mode": loc.active_mode,
+                            "gateways": loc.gateway_device_ids,
+                        }
+                        for loc in self.locations.values()
+                    },
+                )
+            elif self.locations:
+                sole = next(iter(self.locations.values()))
                 _LOGGER.info(
                     "Initial mode: %s (revision=%s, location=%s)",
-                    self.active_mode,
-                    self._mode_revision,
-                    self.location_id,
+                    sole.active_mode,
+                    sole.mode_revision,
+                    sole.location_id,
                 )
         except Exception:
-            _LOGGER.warning("Could not fetch initial active mode", exc_info=True)
+            _LOGGER.warning("Could not fetch initial locations/mode", exc_info=True)
 
-        # Request initial snapshots only when armed — Arlo refuses with
-        # error 4006 ("Invalid camera activity state change") if the
-        # camera is in standby, so polling it just generates noise.
-        if self.active_mode and self.active_mode != "standby":
-            for device in self._devices:
+        # Request initial snapshots only when the camera's own location is
+        # armed — Arlo refuses with error 4006 ("Invalid camera activity state
+        # change") if the camera is in standby, so polling it just generates
+        # noise. Gating per-device (not on a single global mode) is what makes
+        # this correct on multi-location accounts.
+        for device in self._devices:
+            mode = self.mode_for_device(device.device_id)
+            if mode and mode != "standby":
                 try:
                     await self.client.request_snapshot(device.device_id)
                     _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
@@ -716,8 +833,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif feed_type == "modeChange":
             try:
                 event = ModeChangeEvent.model_validate(payload)
-                self._set_active_mode(event.active_mode)
-                _LOGGER.debug("Mode change: %s", event.active_mode)
+                self._apply_mode(event.location_id, event.active_mode)
+                _LOGGER.debug(
+                    "Mode change: location=%s mode=%s", event.location_id, event.active_mode
+                )
                 self.async_set_updated_data(self.data or {})
             except Exception:
                 _LOGGER.warning(
@@ -751,8 +870,12 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         properties = payload.get("properties", {})
         try:
             mode = ActiveMode.model_validate(properties)
-            self._set_active_mode(mode.properties.mode)
-            _LOGGER.debug("Active mode: %s", self.active_mode)
+            location_id = payload.get("locationId")
+            self._apply_mode(
+                location_id if isinstance(location_id, str) else None,
+                mode.properties.mode,
+            )
+            _LOGGER.debug("Active mode update: %s", mode.properties.mode)
             self.async_set_updated_data(self.data or {})
         except Exception:
             _LOGGER.warning(
@@ -768,9 +891,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Per-device state broadcast — currently we only care about activeMode.
 
         Topic: d/{xCloudId}/out/devices/{deviceId}/states/is. The states
-        block carries the friendly activeMode (armAway/armHome/standby);
-        we mirror it into the location mode tracker so the select entity
-        stays in sync if a different client changes it.
+        block carries the friendly activeMode (armAway/armHome/standby); we
+        mirror it onto the broadcasting device's location so that location's
+        select stays in sync if a different client changes it.
         """
         states = payload.get("states")
         if not isinstance(states, dict):
@@ -780,7 +903,18 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (KeyError, TypeError):
             return
         if isinstance(active_mode, str):
-            self._set_active_mode(active_mode)
+            # Topic: d/{xCloudId}/out/devices/{deviceId}/states/is — resolve the
+            # broadcasting device to its location so multi-location accounts
+            # update the right one. Falls back to the sole location otherwise.
+            parts = topic.split("/")
+            device_id = parts[4] if len(parts) > 4 else None
+            device = (
+                next((d for d in self._devices if d.device_id == device_id), None)
+                if device_id is not None
+                else None
+            )
+            location = self.location_for_device(device) if device is not None else None
+            self._apply_mode(location.location_id if location is not None else None, active_mode)
             self.async_set_updated_data(self.data or {})
 
     async def _handle_geofences(self, topic: str, payload: dict[str, Any]) -> None:

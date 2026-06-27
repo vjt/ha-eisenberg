@@ -12,6 +12,8 @@ from eisenberg.models import (
     Connectivity,
     DeviceInfo,
     DeviceState,
+    LocationInfo,
+    LocationState,
     MediaUpload,
     ModeChangeEvent,
     MotionEvent,
@@ -19,6 +21,8 @@ from eisenberg.models import (
     SnapshotAvailable,
     SpotlightState,
     StreamResponse,
+    SubscribeOutcome,
+    TopicResult,
 )
 
 
@@ -323,3 +327,82 @@ class TestArloMode:
         assert ArloMode.ARM_AWAY == "armAway"
         assert ArloMode.ARM_HOME == "armHome"
         assert ArloMode.STANDBY == "standby"
+
+
+class TestLocationInfo:
+    def test_parses_gateway_device_ids(self) -> None:
+        info = LocationInfo.model_validate(
+            {
+                "locationId": "loc-uuid",
+                "locationName": "Home",
+                "gatewayDeviceIds": ["BASE-A", "BASE-B"],
+            }
+        )
+        assert info.location_id == "loc-uuid"
+        assert info.location_name == "Home"
+        assert info.gateway_device_ids == ["BASE-A", "BASE-B"]
+
+    def test_gateway_device_ids_default_empty(self) -> None:
+        info = LocationInfo.model_validate({"locationId": "loc-uuid"})
+        assert info.gateway_device_ids == []
+
+
+class TestLocationState:
+    def test_defaults(self) -> None:
+        state = LocationState(
+            location_id="loc-uuid",
+            location_name="Home",
+            gateway_device_ids=["BASE-A"],
+        )
+        assert state.location_id == "loc-uuid"
+        assert state.location_name == "Home"
+        assert state.gateway_device_ids == ["BASE-A"]
+        assert state.active_mode is None
+        assert state.mode_revision == 1
+
+    def test_from_location_info(self) -> None:
+        info = LocationInfo.model_validate(
+            {
+                "locationId": "loc-uuid",
+                "locationName": "Cabin",
+                "gatewayDeviceIds": ["BASE-X", "BASE-Y"],
+            }
+        )
+        state = LocationState.from_info(info)
+        assert state.location_id == "loc-uuid"
+        assert state.location_name == "Cabin"
+        assert state.gateway_device_ids == ["BASE-X", "BASE-Y"]
+        assert state.active_mode is None
+        assert state.mode_revision == 1
+
+
+class TestSubscribeOutcome:
+    def test_counts_and_refused_topics(self) -> None:
+        outcome = SubscribeOutcome(
+            results=[
+                TopicResult(topic="d/A/out/#", code=0, granted=True),
+                TopicResult(topic="d/B/out/#", code=1, granted=True),
+                TopicResult(topic="d/C/out/#", code=0x80, granted=False),
+                TopicResult(topic="u/USER/in/#", code=0x80, granted=False),
+            ]
+        )
+        assert outcome.granted_count == 2
+        assert outcome.refused_count == 2
+        assert outcome.refused_topics == ["d/C/out/#", "u/USER/in/#"]
+
+    def test_result_for_returns_matching_topic(self) -> None:
+        user_topic = TopicResult(topic="u/USER/in/#", code=1, granted=True)
+        outcome = SubscribeOutcome(
+            results=[
+                TopicResult(topic="d/A/out/#", code=0, granted=True),
+                user_topic,
+            ]
+        )
+        assert outcome.result_for("u/USER/in/#") == user_topic
+        assert outcome.result_for("u/NOPE/in/#") is None
+
+    def test_empty_outcome(self) -> None:
+        outcome = SubscribeOutcome(results=[])
+        assert outcome.granted_count == 0
+        assert outcome.refused_count == 0
+        assert outcome.refused_topics == []

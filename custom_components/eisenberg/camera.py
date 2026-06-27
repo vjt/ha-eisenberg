@@ -128,7 +128,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         when the camera is in standby — surface that as HomeAssistantError
         so the service call fails loudly instead of silently no-oping.
         """
-        if self.coordinator.active_mode == "standby":
+        if self.coordinator.mode_for_device(self._device.device_id) == "standby":
             from homeassistant.exceptions import HomeAssistantError
 
             raise HomeAssistantError(
@@ -181,7 +181,9 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         if was_streaming and not self._attr_is_streaming and self.stream is not None:
             self.hass.async_create_task(self._cache_last_stream_frame())
 
-        self._attr_motion_detection_enabled = self.coordinator.active_mode != "standby"
+        self._attr_motion_detection_enabled = (
+            self.coordinator.mode_for_device(self._device.device_id) != "standby"
+        )
         self.async_write_ha_state()
 
     async def _cache_last_stream_frame(self) -> None:

@@ -147,6 +147,68 @@ class LocationInfo(BaseModel):
 
     location_id: str = Field(alias="locationId")
     location_name: str | None = Field(None, alias="locationName")
+    # Gateway (base station) deviceIds belonging to this location. A device
+    # maps to a location when its gateway — its parentId, or its own deviceId
+    # when base-less — is in this list. Mirrors pyaarlo's location.py:44.
+    gateway_device_ids: list[str] = Field(default_factory=list, alias="gatewayDeviceIds")
+
+
+class LocationState(BaseModel):
+    """Per-location runtime record: identity + gateway membership + the
+    location's current security mode and revision.
+
+    Modes are scoped per-location in the v3 automation API, so the coordinator
+    keeps one of these per location rather than a single global mode.
+    """
+
+    location_id: str
+    location_name: str | None = None
+    gateway_device_ids: list[str] = Field(default_factory=list)
+    active_mode: str | None = None
+    mode_revision: int = 1
+
+    @classmethod
+    def from_info(cls, info: LocationInfo) -> LocationState:
+        return cls(
+            location_id=info.location_id,
+            location_name=info.location_name,
+            gateway_device_ids=info.gateway_device_ids,
+        )
+
+
+class TopicResult(BaseModel):
+    """One topic filter's SUBACK outcome. `granted` is the caller's verdict on
+    `code` (the MQTT 0x80 failure sentinel lives in the protocol layer, not
+    here)."""
+
+    topic: str
+    code: int
+    granted: bool
+
+
+class SubscribeOutcome(BaseModel):
+    """Per-topic SUBACK results for one SUBSCRIBE, so the coordinator can log a
+    grant/refuse/user-topic summary in a namespace the HA debug toggle reaches."""
+
+    results: list[TopicResult]
+
+    @property
+    def granted_count(self) -> int:
+        return sum(1 for r in self.results if r.granted)
+
+    @property
+    def refused_count(self) -> int:
+        return sum(1 for r in self.results if not r.granted)
+
+    @property
+    def refused_topics(self) -> list[str]:
+        return [r.topic for r in self.results if not r.granted]
+
+    def result_for(self, topic: str) -> TopicResult | None:
+        for r in self.results:
+            if r.topic == topic:
+                return r
+        return None
 
 
 class ActiveModeStateProperties(BaseModel):
