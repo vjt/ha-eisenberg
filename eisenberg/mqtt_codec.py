@@ -98,52 +98,63 @@ def build_disconnect() -> bytes:
     return bytes([0xE0, 0x00])
 
 
-def split_packets(buffer: bytes) -> tuple[list[bytes], bytes]:
-    """Split a raw byte buffer into complete MQTT packets plus a remainder.
+def take_packet(buffer: bytes) -> tuple[bytes | None, bytes]:
+    """Consume one complete MQTT packet from the front of ``buffer``.
+
+    Returns ``(packet, remainder)``. ``packet`` is ``None`` (and the buffer
+    returned untouched) when the front does not yet hold a full fixed header
+    (type byte + complete remaining-length varint) or a full payload — the
+    caller should read more bytes and retry.
 
     MQTT-over-WebSocket does NOT align control packets to WebSocket frame
-    boundaries: a single frame may carry several packets, and one packet may
-    span multiple frames (MQTT 3.1.1 over WS, §section "WebSocket framing").
-    Treating one frame as one packet silently drops everything after the
-    first — the failure mode behind snapshots/events never arriving on busy
-    accounts (issue #13).
+    boundaries: a frame may carry several packets, and one packet may span
+    frames. This is the primitive that lets us decode exactly one packet and
+    keep the rest verbatim, so bytes trailing a CONNACK/SUBACK (a coalesced
+    PUBLISH) are preserved rather than discarded (issue #13).
+    """
+    n = len(buffer)
+    if n < 1:
+        return None, bytes(buffer)
+    # Decode the remaining-length varint starting after the type byte. Bail
+    # the moment we run out of bytes mid-varint — length is unknown yet.
+    remaining = 0
+    multiplier = 1
+    pos = 1
+    complete = False
+    while pos < n:
+        byte = buffer[pos]
+        remaining += (byte & 0x7F) * multiplier
+        pos += 1
+        if (byte & 0x80) == 0:
+            complete = True
+            break
+        multiplier *= 128
+        if multiplier > 128**3:  # varint is max 4 bytes per spec
+            complete = True
+            break
+    if not complete:
+        return None, bytes(buffer)
+    end = pos + remaining
+    if end > n:
+        return None, bytes(buffer)  # full payload not arrived yet
+    return bytes(buffer[:end]), bytes(buffer[end:])
 
-    Returns ``(packets, remainder)`` where ``packets`` is every fully-present
-    packet in order and ``remainder`` is the trailing incomplete bytes the
-    caller must prepend to the next chunk. A buffer that doesn't yet contain
-    a full fixed header (type byte + complete remaining-length varint) or a
-    full payload yields no packet and is returned whole as the remainder.
+
+def split_packets(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """Split a byte buffer into every complete MQTT packet plus a remainder.
+
+    Loops :func:`take_packet`. Returns ``(packets, remainder)`` where
+    ``remainder`` is the trailing incomplete bytes to prepend to the next
+    chunk. See :func:`take_packet` for why this is needed (issue #13).
     """
     packets: list[bytes] = []
-    idx = 0
-    n = len(buffer)
-    while idx < n:
-        # Decode the remaining-length varint that starts one byte after the
-        # fixed-header type byte. Bail (keep as remainder) the moment we run
-        # out of bytes mid-varint — we can't know the packet length yet.
-        remaining = 0
-        multiplier = 1
-        pos = idx + 1
-        complete = False
-        while pos < n:
-            byte = buffer[pos]
-            remaining += (byte & 0x7F) * multiplier
-            pos += 1
-            if (byte & 0x80) == 0:
-                complete = True
-                break
-            multiplier *= 128
-            if multiplier > 128**3:  # varint is max 4 bytes per spec
-                complete = True
-                break
-        if not complete:
+    rest = bytes(buffer)
+    while True:
+        packet, rest = take_packet(rest)
+        if packet is None:
             break
-        end = pos + remaining
-        if end > n:
-            break  # full payload not arrived yet
-        packets.append(bytes(buffer[idx:end]))
-        idx = end
-    return packets, bytes(buffer[idx:])
+        packets.append(packet)
+    return packets, rest
 
 
 def parse_packet_type(data: bytes) -> int:
