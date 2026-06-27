@@ -104,6 +104,7 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
         self._category = category
         self._entry = entry
         self._reset_task: asyncio.Task[None] | None = None
+        self._last_seen_event_key: str | None = None
         self._attr_name = f"{category} detected"
         self._attr_unique_id = f"{device.device_id}_{category.lower()}"
         self._attr_device_info = {
@@ -112,17 +113,28 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Check if latest motion event matches our category."""
+        """Fire only on a new event for our category.
+
+        Every coordinator broadcast (siren/mode/motion from ANY device)
+        re-runs this on ALL sensors, and motion_events keeps the last
+        event per device forever. Guarding on is_on alone re-fired this
+        sensor off its own stale event whenever some other camera updated.
+        Track the last processed event so we act once per real event.
+        """
         event = self.coordinator.motion_events.get(self._device.device_id)
-        if (
-            event
-            and event.obj_categories
-            and self._category in event.obj_categories
-            and not self._attr_is_on
-        ):
-            self._attr_is_on = True
-            self._schedule_reset()
-            self.async_write_ha_state()
+        if not event or not event.obj_categories:
+            return
+        if self._category not in event.obj_categories:
+            return
+
+        event_key = event.feed_id or str(event.utc_created_date)
+        if event_key == self._last_seen_event_key:
+            return
+
+        self._last_seen_event_key = event_key
+        self._attr_is_on = True
+        self._schedule_reset()
+        self.async_write_ha_state()
 
     def _schedule_reset(self) -> None:
         """Schedule auto-reset after timeout."""
