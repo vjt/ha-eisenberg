@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.6 — 2026-06-28
+
+### Fixed
+
+- **Snapshot 4006 on base-stationed accounts (#16).** Per-device commands
+  (snapshot, spotlight, siren) were addressed to the camera id. Arlo routes
+  device commands through the controlling base station, so on accounts where
+  a camera lives under a real base station (`parentId != deviceId`) the base
+  rejected the `→ fullFrameSnapshot` transition with "Invalid camera activity
+  state change" (4006) from a cold start. Commands now target the device's
+  base station (its `parentId`, or its own id when base-less), and snapshots
+  use Arlo's dedicated `fullFrameSnapshot` endpoint — mirroring pyaarlo. The
+  0.3.5 per-location mode fix was necessary but not sufficient; this is the
+  routing half. Base-less accounts (single camera = its own gateway) are
+  unchanged.
+
 ## 0.3.5 — 2026-06-27
 
 ### Added

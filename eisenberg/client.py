@@ -96,6 +96,11 @@ class EisenbergClient:
         self.mqtt_url: str | None = None
         self._x_cloud_id: str | None = None
         self._device_cloud_ids: dict[str, str] = {}
+        # device_id -> controlling base-station id (its parentId), or its own
+        # id when base-less. Per-device commands (snapshot, spotlight, siren)
+        # must be routed to the base station, not the camera — see
+        # _device_target. Populated by get_devices().
+        self._device_parent_ids: dict[str, str] = {}
         self._token_issued_at: float = 0
 
     def set_http_session(self, session: ClientSession) -> None:
@@ -167,6 +172,21 @@ class EisenbergClient:
         if device_id not in self._device_cloud_ids:
             raise RuntimeError(f"Unknown device_id {device_id!r}; call get_devices() first")
         return self._device_cloud_ids[device_id]
+
+    def _device_target(self, device_id: str) -> str:
+        """The id a per-device command must be addressed to (`to` field + URL).
+
+        Arlo routes device commands through the controlling base station, not
+        the camera. A request addressed to the camera id is rejected by the
+        base with "Invalid camera activity state change" (4006) on accounts
+        where the camera lives under a real base station (parentId != deviceId).
+        Base-less cameras are their own gateway, so this returns the device id.
+        Mirrors pyaarlo, whose notify()/idle-snapshot always target parent_id.
+        Unknown id is a bug — crash rather than guess the wrong base.
+        """
+        if device_id not in self._device_parent_ids:
+            raise RuntimeError(f"Unknown device_id {device_id!r}; call get_devices() first")
+        return self._device_parent_ids[device_id]
 
     def _myapi_headers(self, token: str) -> dict[str, str]:
         """Headers for myapi.arlo.com — raw token, not base64.
@@ -474,6 +494,9 @@ class EisenbergClient:
         # xCloudId per camera; see _device_cloud_id.
         for d in devices:
             self._device_cloud_ids[d.device_id] = d.x_cloud_id
+            # Route per-device commands to the controlling base station. A
+            # base-less camera is its own gateway, so fall back to its own id.
+            self._device_parent_ids[d.device_id] = d.parent_id or d.device_id
 
         # Account-level default for calls not scoped to a single device
         # (e.g. session/v3, locations, mode changes scoped to a location).
@@ -487,12 +510,17 @@ class EisenbergClient:
         if self.token is None:
             raise RuntimeError("Not authenticated")
 
+        # Dedicated idle-snapshot endpoint, addressed to the camera's base
+        # station. Mirrors pyaarlo's _take_idle_snapshot: the base owns the
+        # activityState transition, so a request addressed to the camera id
+        # is rejected with 4006 on base-stationed accounts (issue #16).
+        target = self._device_target(device_id)
         async with self.session.post(
-            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
+            f"{MYAPI_BASE}/hmsweb/users/devices/fullFrameSnapshot",
             headers=self._device_headers(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
-                "to": device_id,
+                "to": target,
                 "action": "set",
                 "resource": f"cameras/{device_id}",
                 "publishResponse": True,
@@ -654,12 +682,15 @@ class EisenbergClient:
         if intensity is not None:
             spotlight["intensity"] = intensity
 
+        # Addressed to the base station (notify routes through the gateway),
+        # not the camera id — same base-routing rule as request_snapshot (#16).
+        target = self._device_target(device_id)
         async with self.session.post(
-            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
+            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{target}",
             headers=self._device_headers(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
-                "to": device_id,
+                "to": target,
                 "action": "set",
                 "resource": f"cameras/{device_id}",
                 "publishResponse": True,
@@ -685,12 +716,14 @@ class EisenbergClient:
             properties["volume"] = 8
             properties["pattern"] = "alarm"
 
+        # Addressed to the base station, same base-routing rule as snapshot (#16).
+        target = self._device_target(device_id)
         async with self.session.post(
-            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{device_id}",
+            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{target}",
             headers=self._device_headers(self.token, device_id),
             json={
                 "from": f"{self.user_id}_web",
-                "to": device_id,
+                "to": target,
                 "action": "set",
                 "resource": f"siren/{device_id}",
                 "publishResponse": True,

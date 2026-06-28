@@ -24,6 +24,8 @@ def make_authed_client() -> EisenbergClient:
     client._x_cloud_id = "XCLOUD-1"
     # Per-device base-station xCloudIds, as populated by get_devices().
     client._device_cloud_ids = {"CAM-1": "XCLOUD-1"}
+    # CAM-1 is base-less in this fixture: its own id is its gateway.
+    client._device_parent_ids = {"CAM-1": "CAM-1"}
     return client
 
 
@@ -173,3 +175,121 @@ class TestPerDeviceCloudId:
             client._device_cloud_ids = {}
             with pytest.raises(RuntimeError, match="Unknown device_id"):
                 await client.set_siren("CAM-X", on=True)
+
+
+class TestBaseStationRouting:
+    """Per-device commands must address the base station, not the camera (#16).
+
+    Arlo routes device commands through the controlling gateway. A camera
+    living under a real base station (parentId != deviceId) rejects a request
+    addressed to its own id with "Invalid camera activity state change" (4006).
+    Base-less cameras are their own gateway, so they keep targeting their id.
+    """
+
+    @staticmethod
+    def _devices_payload() -> dict:
+        # CAM lives under BASE; SOLO is base-less (no parentId).
+        return {
+            "success": True,
+            "data": [
+                {
+                    "deviceId": "BASE",
+                    "deviceName": "Base",
+                    "modelId": "VMB5000",
+                    "xCloudId": "XC-BASE",
+                },
+                {
+                    "deviceId": "CAM",
+                    "deviceName": "Front",
+                    "modelId": "VMC2052A",
+                    "xCloudId": "XC-BASE",
+                    "parentId": "BASE",
+                },
+                {
+                    "deviceId": "SOLO",
+                    "deviceName": "Garden",
+                    "modelId": "VMC2052A",
+                    "xCloudId": "XC-SOLO",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _post(m: aioresponses) -> tuple[str, dict]:
+        for (method, url), calls in m.requests.items():
+            if method == "POST":
+                req = calls[0]
+                body = req.kwargs["json"]
+                body = json.loads(body) if isinstance(body, str) else body
+                return str(url), body
+        raise AssertionError("no POST recorded")
+
+    async def _discover(self, m: aioresponses, client: EisenbergClient) -> None:
+        m.get(f"{MYAPI}/hmsweb/v2/users/devices", payload=self._devices_payload())
+        client._device_cloud_ids = {}
+        client._device_parent_ids = {}
+        await client.get_devices()
+
+    async def test_get_devices_maps_camera_to_its_base(self) -> None:
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+            assert client._device_parent_ids == {
+                "BASE": "BASE",
+                "CAM": "BASE",
+                "SOLO": "SOLO",
+            }
+
+    async def test_snapshot_targets_base_via_dedicated_endpoint(self) -> None:
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+                m.post(
+                    f"{MYAPI}/hmsweb/users/devices/fullFrameSnapshot",
+                    payload={"success": True},
+                )
+                await client.request_snapshot("CAM")
+
+            url, body = self._post(m)
+            assert url.endswith("/hmsweb/users/devices/fullFrameSnapshot")
+            assert body["to"] == "BASE"
+            assert body["resource"] == "cameras/CAM"
+            assert body["properties"] == {"activityState": "fullFrameSnapshot"}
+
+    async def test_base_less_snapshot_targets_itself(self) -> None:
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+                m.post(
+                    f"{MYAPI}/hmsweb/users/devices/fullFrameSnapshot",
+                    payload={"success": True},
+                )
+                await client.request_snapshot("SOLO")
+
+            _url, body = self._post(m)
+            assert body["to"] == "SOLO"
+            assert body["resource"] == "cameras/SOLO"
+
+    async def test_spotlight_targets_base(self) -> None:
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+                m.post(f"{MYAPI}/hmsweb/users/devices/notify/BASE", payload={"success": True})
+                await client.set_spotlight("CAM", on=True)
+
+            url, body = self._post(m)
+            assert url.endswith("/notify/BASE")
+            assert body["to"] == "BASE"
+            assert body["resource"] == "cameras/CAM"
+
+    async def test_siren_targets_base(self) -> None:
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+                m.post(f"{MYAPI}/hmsweb/users/devices/notify/BASE", payload={"success": True})
+                await client.set_siren("CAM", on=True)
+
+            url, body = self._post(m)
+            assert url.endswith("/notify/BASE")
+            assert body["to"] == "BASE"
+            assert body["resource"] == "siren/CAM"
