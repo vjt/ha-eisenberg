@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.7 — 2026-07-09
+
+### Added
+
+- **Manual snapshot button (#8).** Each camera now exposes a
+  `button.<camera>_snapshot` entity. Pressing it asks Arlo for a fresh
+  full-frame snapshot; the image arrives over MQTT and refreshes the camera
+  tile, exactly like motion-triggered snapshots. Handy for automations that
+  feed a still to an AI/image-analysis step. The standby-guard (Arlo refuses
+  cloud snapshots while disarmed → error 4006) and session-retry now live on
+  the coordinator, shared by the button and the existing `eisenberg.snapshot`
+  service. Verified live end-to-end on HAOS.
+
 ## 0.3.6 — 2026-06-28
 
 ### Fixed
