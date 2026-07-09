@@ -366,6 +366,32 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         location = self.location_for_device(device)
         return location.active_mode if location is not None else None
 
+    async def request_snapshot(self, device_id: str) -> None:
+        """Ask Arlo for a fresh full-frame snapshot of a camera.
+
+        The image arrives later via MQTT (fullFrameSnapshotAvailable) and is
+        cached/archived by the update handler — this call only triggers it.
+        Arlo refuses with error 4006 while the camera is disarmed (standby),
+        so guard that up front and surface it as HomeAssistantError instead of
+        firing a call that silently no-ops. Shared by the camera snapshot
+        service and the per-camera snapshot button (#8).
+        """
+        from homeassistant.exceptions import HomeAssistantError
+
+        if self.mode_for_device(device_id) == "standby":
+            raise HomeAssistantError(
+                "Cannot snapshot while disarmed — Arlo refuses cloud snapshots in standby"
+            )
+        try:
+            await self.call_with_session_retry(
+                "request_snapshot",
+                lambda: self.client.request_snapshot(device_id),
+            )
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            raise HomeAssistantError(f"Snapshot request failed: {err}") from err
+
     def _apply_mode(self, location_id: str | None, mode: str) -> None:
         """Record a mode change from an MQTT event onto the right location.
 
