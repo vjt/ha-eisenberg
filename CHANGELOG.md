@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.8 — 2026-07-13
+
+### Fixed
+
+- **Security mode set silently no-ops on shared-device accounts (#21).** When
+  a base station is shared to your account from another Arlo account, its
+  devices live under `sharedLocations` in the locations API — a sibling of
+  `userLocations` we were ignoring. Mode set/get landed on your own (empty,
+  device-less) default location: the cloud returned `success: True` and the
+  select flipped, but the physical base never changed (the Arlo app still
+  showed the old mode). `get_locations` now unions owned **and** shared
+  locations, and the coordinator resolves each device to the location that
+  actually gateways it, so mode commands reach the real base. (If the owner
+  grants you only view access, the command now fails loudly instead of
+  pretending to succeed.)
+- **Duplicate entities / "does not generate unique IDs" on base stations with
+  a built-in siren (#21).** Arlo returns such a base as two device records
+  sharing one deviceId (the siren twin's modelId suffixed `-siren`), so every
+  entity collided on `{deviceId}_*` and Home Assistant dropped half of them.
+  Discovery now collapses the twin into a single device (the siren switch
+  still works — it targets the deviceId either way).
+
 ## 0.3.7 — 2026-07-09
 
 ### Added

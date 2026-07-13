@@ -293,3 +293,57 @@ class TestBaseStationRouting:
             assert url.endswith("/notify/BASE")
             assert body["to"] == "BASE"
             assert body["resource"] == "siren/CAM"
+
+
+class TestGetDevicesDedup:
+    """A base station with a built-in siren is returned by Arlo as TWO device
+    records sharing the same deviceId (the twin's modelId suffixed "-siren").
+    Emitting both makes every entity collide on unique_id `{deviceId}_*`, so HA
+    drops the twin's entities and logs "does not generate unique IDs" (issue
+    #21, DirkWeber1972's VMB4000). get_devices must collapse to one record per
+    deviceId, keeping the real device over the "-siren" twin.
+    """
+
+    @staticmethod
+    def _payload() -> dict:
+        # Order mirrors Dirk's log: the "-siren" twin comes FIRST, the real
+        # base SECOND — dedup must still keep the real base.
+        return {
+            "success": True,
+            "data": [
+                {
+                    "deviceId": "4RD17372A3A28",
+                    "deviceName": "Arlo Pro Basisstation",
+                    "modelId": "VMB4000-siren",
+                    "xCloudId": "UQ4GXZF",
+                },
+                {
+                    "deviceId": "4RD17372A3A28",
+                    "deviceName": "Arlo Pro Basisstation",
+                    "modelId": "VMB4000",
+                    "xCloudId": "UQ4GXZF",
+                },
+                {
+                    "deviceId": "CAM",
+                    "deviceName": "Wintergarten",
+                    "modelId": "VMC4030",
+                    "xCloudId": "UQ4GXZF",
+                },
+            ],
+        }
+
+    async def test_base_and_siren_twin_collapse_to_one_record(self) -> None:
+        with aioresponses() as m:
+            m.get(f"{MYAPI}/hmsweb/v2/users/devices", payload=self._payload())
+            async with make_authed_client() as client:
+                client._device_cloud_ids = {}
+                devices = await client.get_devices()
+
+        ids = [d.device_id for d in devices]
+        assert ids.count("4RD17372A3A28") == 1
+        # The real base is kept, not the "-siren" twin.
+        base = next(d for d in devices if d.device_id == "4RD17372A3A28")
+        assert base.model_id == "VMB4000"
+        # The real camera is untouched.
+        assert "CAM" in ids
+        assert len(devices) == 2

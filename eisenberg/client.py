@@ -63,6 +63,28 @@ def _raise_for_arlo_error(body: dict[str, Any], op: str) -> None:
     raise APIError(code=err_code, message=f"{op} failed: {body}")
 
 
+def _dedupe_devices(devices: list[DeviceInfo]) -> list[DeviceInfo]:
+    """Collapse device records that share a deviceId (issue #21).
+
+    A base station with a built-in siren is returned as TWO records with the
+    same deviceId — the siren twin carries a modelId suffixed "-siren". Both
+    would emit entities keyed `{deviceId}_*`, colliding on unique_id so HA drops
+    the twin ("does not generate unique IDs"). Keep one record per deviceId,
+    preferring the real device over the "-siren" twin; every per-device command
+    (incl. the siren switch) targets the deviceId, which is identical either
+    way. Order is otherwise preserved.
+    """
+    kept: dict[str, DeviceInfo] = {}
+    for device in devices:
+        existing = kept.get(device.device_id)
+        # First record for this id, or a real device replacing a "-siren" twin.
+        if existing is None or (
+            existing.model_id.endswith("-siren") and not device.model_id.endswith("-siren")
+        ):
+            kept[device.device_id] = device
+    return list(kept.values())
+
+
 # Mobile UA to get RTSP URLs from startStream (not DASH)
 _MOBILE_UA = "Arlo/4.0 (iPhone; iOS 18.0)"
 _BROWSER_UA = (
@@ -486,7 +508,7 @@ class EisenbergClient:
         if not body.get("success"):
             _raise_for_arlo_error(body, "get_devices")
 
-        devices = [DeviceInfo.model_validate(d) for d in body["data"]]
+        devices = _dedupe_devices([DeviceInfo.model_validate(d) for d in body["data"]])
 
         # Track every device's own xCloudId — needed for any per-device REST
         # call (start_stream, request_snapshot, set_spotlight, set_siren).
@@ -576,10 +598,16 @@ class EisenbergClient:
         return headers
 
     async def get_locations(self) -> list[LocationInfo]:
-        """List the user's owned locations.
+        """List every location the user can see — owned AND shared.
 
-        Modes are scoped to a location in the v3 automation API. Most users
-        have a single location. We pick the first one as the default.
+        Modes are scoped to a location in the v3 automation API. Devices shared
+        from another Arlo account live under `sharedLocations`, a sibling of
+        `userLocations`, and the gatewayDeviceIds that map a base station to its
+        location live only there — the user's own default location can be empty.
+        Reading just `userLocations` strands shared devices on a phantom,
+        device-less location so mode set/get never reaches the real base (issue
+        #21). Merge all buckets, deduping by locationId (a location can appear
+        in more than one bucket). pyaarlo unions owned + shared the same way.
         """
         if self.token is None or self.user_id is None:
             raise RuntimeError("Not authenticated")
@@ -597,17 +625,19 @@ class EisenbergClient:
         except (KeyError, TypeError):
             return []
 
-        raw: Any = None
-        for key in ("userLocations", "ownedLocations", "locations"):
+        deduped: dict[str, LocationInfo] = {}
+        for key in ("userLocations", "ownedLocations", "sharedLocations", "locations"):
             try:
                 raw = data[key]
             except (KeyError, TypeError):
                 continue
-            break
-        if not isinstance(raw, list):
-            return []
+            if not isinstance(raw, list):
+                continue
+            for item in cast("list[Any]", raw):
+                info = LocationInfo.model_validate(item)
+                deduped.setdefault(info.location_id, info)
 
-        return [LocationInfo.model_validate(item) for item in cast("list[Any]", raw)]
+        return list(deduped.values())
 
     async def get_active_mode(self, location_id: str) -> ActiveModeState:
         """GET the current active mode + revision for a location."""

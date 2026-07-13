@@ -38,6 +38,7 @@ from eisenberg.models import (
     ActiveMode,
     BasestationState,
     DeviceState,
+    LocationInfo,
     LocationState,
     MediaUpload,
     ModeChangeEvent,
@@ -83,6 +84,30 @@ def resolve_location_for_device(
             if gateway in (gid, suffix):
                 return location
     return None
+
+
+def relevant_locations(infos: list[LocationInfo], devices: list[DeviceInfo]) -> list[LocationInfo]:
+    """Keep only locations that gateway at least one discovered device (#21).
+
+    Shared-device accounts get an empty own default location plus a shared
+    location that actually gateways the base station. The empty one would spawn
+    a phantom mode select and silently absorb mode set/get that never reaches
+    the physical base (DirkWeber1972's VMB4000, shared from another account).
+    Prune locations that claim none of our devices — unless NO location claims
+    any (Arlo omitted gatewayDeviceIds), in which case keep all so
+    single-location accounts still resolve via the coordinator fallback.
+    """
+    gateways = {(d.parent_id or d.device_id) for d in devices}
+
+    def claims_a_device(info: LocationInfo) -> bool:
+        for gid in info.gateway_device_ids:
+            suffix = gid.split("_", 1)[-1] if "_" in gid else gid
+            if gid in gateways or suffix in gateways:
+                return True
+        return False
+
+    relevant = [info for info in infos if claims_a_device(info)]
+    return relevant if relevant else infos
 
 
 class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -590,7 +615,8 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # camera is disarmed (Arlo refuses with error 4006).
         try:
             self.locations = {}
-            for info in await self.client.get_locations():
+            infos = relevant_locations(await self.client.get_locations(), self._devices)
+            for info in infos:
                 location = LocationState.from_info(info)
                 try:
                     state = await self.client.get_active_mode(info.location_id)
