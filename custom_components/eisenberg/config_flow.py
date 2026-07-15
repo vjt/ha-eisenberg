@@ -31,10 +31,12 @@ from eisenberg import (
 from .const import (
     CONF_DETECTION_TIMEOUT,
     CONF_DEVICE_ID,
+    CONF_FFMPEG_STREAM,
     CONF_MEDIA_DIR,
     CONF_MEDIA_RETENTION_DAYS,
     CONF_TRUST_COOKIE,
     DEFAULT_DETECTION_TIMEOUT,
+    DEFAULT_FFMPEG_STREAM,
     DEFAULT_MEDIA_RETENTION_DAYS,
     DOMAIN,
 )
@@ -590,6 +592,10 @@ class EisenbergOptionsFlow(OptionsFlow):
                             DEFAULT_MEDIA_RETENTION_DAYS,
                         ),
                     ): vol.All(int, vol.Range(min=1, max=365)),
+                    vol.Required(
+                        CONF_FFMPEG_STREAM,
+                        default=opts.get(CONF_FFMPEG_STREAM, DEFAULT_FFMPEG_STREAM),
+                    ): bool,
                 }
             ),
         )

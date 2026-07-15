@@ -34,6 +34,9 @@ dev = [
     "pytest-cov>=5.0",
     "aioresponses>=0.7",
     "homeassistant>=2026.2",
+    # Transitive dep of HA's `stream` component (imported via `camera`);
+    # required to import the camera platform in tests (test_camera.py).
+    "numpy>=1.26",
     "pyright>=1.1",
     "ruff>=0.4",
 ]

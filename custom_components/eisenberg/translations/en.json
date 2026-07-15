@@ -97,7 +97,11 @@
         "data": {
           "media_dir": "Storage Location",
           "detection_timeout": "Detection sensor reset timeout (seconds)",
-          "media_retention_days": "Archived media retention (days)"
+          "media_retention_days": "Archived media retention (days)",
+          "ffmpeg_stream": "Route live stream through ffmpeg"
+        },
+        "data_description": {
+          "ffmpeg_stream": "Leave off unless the live view is black. Off (default) lets go2rtc read the camera directly — smoother, no transcoding. Turn on only if the stream never appears; it routes video through ffmpeg to work around go2rtc builds that can't read Arlo's stream, at the cost of some smoothness."
         }
       }
     }

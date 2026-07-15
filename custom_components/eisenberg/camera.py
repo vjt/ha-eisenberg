@@ -15,6 +15,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from eisenberg import DeviceInfo
 
+from .const import CONF_FFMPEG_STREAM, DEFAULT_FFMPEG_STREAM
 from .coordinator import EisenbergCoordinator
 
 SERVICE_SNAPSHOT = "snapshot"
@@ -131,12 +132,26 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         await self.coordinator.request_snapshot(self._device.device_id)
 
     async def stream_source(self) -> str | None:
-        """Return the RTSP stream source URL.
+        """Return the live stream source URL.
 
-        Arlo serves the stream on port 443 with TLS but advertises it as
-        plain rtsp://; ffmpeg fails to read the bytes because they're
-        actually TLS-wrapped. Rewrite the scheme to rtsps:// (matches
-        pyaarlo's behaviour) so HA's stream worker negotiates TLS.
+        Arlo serves the stream as RTSP-over-TLS on port 443 but advertises it
+        as plain rtsp://; rewrite the scheme to rtsps:// (matches pyaarlo) so
+        the consumer negotiates TLS.
+
+        By default we return the bare rtsps URL. On a go2rtc box (HA default
+        since 2024.11) go2rtc reads it with its *native* RTSP client — in
+        process, HEVC passthrough, no ffmpeg, no transcode, smooth. That is the
+        right path and must stay the default.
+
+        The ``ffmpeg_stream`` option opts a install into routing the source
+        through ffmpeg (``ffmpeg:rtsps://…``) instead. It exists only for boxes
+        where go2rtc's native RTSP client can't read Arlo's stream at all —
+        black live view, "RTSP wrong input" / "RTP header size insufficient:
+        0 < 4" (issue #23). ffmpeg reads Arlo's TLS stream correctly, at the
+        cost of an extra ``-c copy`` remux hop that adds jitter on boxes where
+        native already worked — hence opt-in, not blanket. Only honoured when
+        go2rtc is actually loaded; otherwise the legacy PyAV path needs a bare
+        URL it can open.
         """
         try:
             resp = await self.coordinator.call_with_session_retry(
@@ -146,7 +161,11 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         except Exception:
             _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
             return None
-        return resp.url.replace("rtsp://", "rtsps://", 1)
+        url = resp.url.replace("rtsp://", "rtsps://", 1)
+        use_ffmpeg = self.coordinator.entry.options.get(CONF_FFMPEG_STREAM, DEFAULT_FFMPEG_STREAM)
+        if use_ffmpeg and "go2rtc" in self.hass.config.components:
+            return f"ffmpeg:{url}"
+        return url
 
     @callback
     def _handle_coordinator_update(self) -> None:
