@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.9 — 2026-07-15
+
+### Added
+
+- **Opt-in ffmpeg live streaming for cameras go2rtc can't read natively (#23).**
+  On the 2K Essential XL 2nd-gen (VMC3052A), Home Assistant's bundled go2rtc
+  can't read Arlo's RTSP stream with its native client ("RTSP wrong input" /
+  "RTP header size insufficient") — the failed read tears down Arlo's
+  single-use stream session and the live view stays black. A new **Route live
+  stream through ffmpeg** option (Settings → Devices & Services → Eisenberg →
+  Configure) routes the source through ffmpeg — the tolerant reader every
+  mature Arlo integration uses — which handles the stream correctly. Off by
+  default: cameras go2rtc already reads natively (e.g. the 1080p VMC2052A) keep
+  the leaner, smoother native path unchanged (no video transcode either way).
+  Enable it only if your live view is black.
+
 ## 0.3.8 — 2026-07-13
 
 ### Fixed
