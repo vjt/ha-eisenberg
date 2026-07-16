@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from aiohttp import CookieJar
@@ -41,11 +41,38 @@ from .const import (
     DOMAIN,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 _LOGGER = logging.getLogger(__name__)
 
 MEDIA_DIR_DISABLED = "__disabled__"
 CONF_FACTOR_ID = "factor_id"
 CONF_OTP = "otp"
+
+
+def _media_dir_choices(media_dirs: Mapping[str, str]) -> dict[str, str]:
+    """Selectable media-storage options, 'Disabled' first.
+
+    Keyed by a non-empty sentinel: an empty-string option value makes HA's
+    form treat the ``Required`` field as unset, so the options flow can never
+    submit with archival disabled — the user is forced to pick a real dir
+    (issue #23). The setup and options flows share this so they can't drift.
+    """
+    choices = {MEDIA_DIR_DISABLED: "Disabled"}
+    for name, path in media_dirs.items():
+        choices[name] = f"{name} ({path})"
+    return choices
+
+
+def _stored_media_dir(selected: str) -> str:
+    """Map the disabled sentinel back to the persisted empty string."""
+    return "" if selected == MEDIA_DIR_DISABLED else selected
+
+
+def _media_dir_default(stored: str) -> str:
+    """Map a persisted media_dir to its form default (disabled -> sentinel)."""
+    return stored or MEDIA_DIR_DISABLED
 
 
 def _serialize_cookies(cookie_jar: CookieJar) -> list[dict[str, str]]:
@@ -292,16 +319,13 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_TRUST_COOKIE: cookies,
                 },
                 options={
-                    CONF_MEDIA_DIR: media_dir if media_dir != MEDIA_DIR_DISABLED else "",
+                    CONF_MEDIA_DIR: _stored_media_dir(media_dir),
                     CONF_DETECTION_TIMEOUT: DEFAULT_DETECTION_TIMEOUT,
                     CONF_MEDIA_RETENTION_DAYS: DEFAULT_MEDIA_RETENTION_DAYS,
                 },
             )
 
-        media_dirs = self.hass.config.media_dirs
-        options = {MEDIA_DIR_DISABLED: "Disabled"}
-        for name, path in media_dirs.items():
-            options[name] = f"{name} ({path})"
+        options = _media_dir_choices(self.hass.config.media_dirs)
 
         return self.async_show_form(
             step_id="media_storage",
@@ -562,13 +586,14 @@ class EisenbergOptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage options."""
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            return self.async_create_entry(
+                data={
+                    **user_input,
+                    CONF_MEDIA_DIR: _stored_media_dir(user_input[CONF_MEDIA_DIR]),
+                }
+            )
 
         opts = self.config_entry.options
-        media_dirs = self.hass.config.media_dirs
-        options = {"": "Disabled"}
-        for name, path in media_dirs.items():
-            options[name] = f"{name} ({path})"
 
         return self.async_show_form(
             step_id="init",
@@ -576,8 +601,8 @@ class EisenbergOptionsFlow(OptionsFlow):
                 {
                     vol.Required(
                         CONF_MEDIA_DIR,
-                        default=opts.get(CONF_MEDIA_DIR, ""),
-                    ): vol.In(options),
+                        default=_media_dir_default(opts.get(CONF_MEDIA_DIR, "")),
+                    ): vol.In(_media_dir_choices(self.hass.config.media_dirs)),
                     vol.Required(
                         CONF_DETECTION_TIMEOUT,
                         default=opts.get(

@@ -352,3 +352,74 @@ class TestAuthPayloadEncoding:
             assert auth_calls, "expected at least one /api/auth call"
             body = auth_calls[0].kwargs["json"]
             assert body["password"] == base64.b64encode(b"hunter2").decode()
+
+
+class TestMediaDirOptions:
+    """Media-dir selection encodes 'Disabled' as a non-empty sentinel.
+
+    Regression for issue #23: the options flow keyed 'Disabled' as the empty
+    string, which HA's form treats as "nothing selected", so a Required field
+    could never submit disabled — the user was forced to enable local storage
+    just to reach the ffmpeg toggle. The setup and options flows now share one
+    encoding, so they cannot drift.
+    """
+
+    def test_disabled_is_a_non_empty_selectable_value(self) -> None:
+        from custom_components.eisenberg.config_flow import (
+            MEDIA_DIR_DISABLED,
+            _media_dir_choices,
+        )
+
+        choices = _media_dir_choices({"media": "/media"})
+
+        # the disabled option must be selectable under a non-empty key...
+        assert MEDIA_DIR_DISABLED in choices
+        assert choices[MEDIA_DIR_DISABLED] == "Disabled"
+        assert MEDIA_DIR_DISABLED != ""
+        # ...and the empty string must never be an offered option value.
+        assert "" not in choices
+
+    def test_real_media_dirs_are_listed_with_paths(self) -> None:
+        from custom_components.eisenberg.config_flow import _media_dir_choices
+
+        choices = _media_dir_choices({"media": "/media", "usb": "/mnt/usb"})
+
+        assert choices["media"] == "media (/media)"
+        assert choices["usb"] == "usb (/mnt/usb)"
+
+    def test_selecting_disabled_persists_as_empty_string(self) -> None:
+        from custom_components.eisenberg.config_flow import (
+            MEDIA_DIR_DISABLED,
+            _stored_media_dir,
+        )
+
+        assert _stored_media_dir(MEDIA_DIR_DISABLED) == ""
+
+    def test_selecting_a_real_dir_persists_verbatim(self) -> None:
+        from custom_components.eisenberg.config_flow import _stored_media_dir
+
+        assert _stored_media_dir("media") == "media"
+
+    def test_stored_empty_defaults_the_form_to_disabled(self) -> None:
+        from custom_components.eisenberg.config_flow import (
+            MEDIA_DIR_DISABLED,
+            _media_dir_default,
+        )
+
+        # a previously-disabled entry (stored "") shows 'Disabled' selected,
+        # not a blank/invalid Required field.
+        assert _media_dir_default("") == MEDIA_DIR_DISABLED
+
+    def test_stored_real_dir_defaults_the_form_to_itself(self) -> None:
+        from custom_components.eisenberg.config_flow import _media_dir_default
+
+        assert _media_dir_default("media") == "media"
+
+    def test_disabled_round_trips_through_form_and_back(self) -> None:
+        from custom_components.eisenberg.config_flow import (
+            _media_dir_default,
+            _stored_media_dir,
+        )
+
+        # stored "" -> form default (sentinel) -> submit -> stored "" again.
+        assert _stored_media_dir(_media_dir_default("")) == ""
