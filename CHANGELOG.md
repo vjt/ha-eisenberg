@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.11 — 2026-07-16
+
+### Changed
+
+- **MQTT subscription refusals no longer log at WARNING (#15).** On grantee/shared
+  and multi-base accounts the broker refuses the broad `d/{xCloudId}/out/#`
+  wildcard the guest doesn't own — expected and harmless, since each device's own
+  `allowedMqttTopics` carry its events regardless. These partial refusals spammed
+  the log at WARNING on every startup (6+ lines on large accounts), reading as a
+  fault when nothing is wrong. They're now DEBUG — still reachable via the
+  integration's "Enable debug logging" toggle when you want the granted/refused
+  breakdown. A *total* refusal (the genuine "no events will arrive" failure) still
+  logs at ERROR.
+
 ## 0.3.10 — 2026-07-16
 
 ### Fixed
