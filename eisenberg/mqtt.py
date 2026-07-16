@@ -223,7 +223,13 @@ class MQTTEventStream:
         )
         for topic, code in zip(topics, codes, strict=False):
             if code == SUBACK_FAILURE:
-                _LOGGER.warning("MQTT broker REFUSED subscription to %s", topic)
+                # DEBUG, not WARNING: a partial refusal is expected and harmless
+                # on grantee/shared and multi-base accounts (the broker refuses
+                # the broad d/{xCloudId}/out/# wildcard the guest doesn't own),
+                # and the per-device allowedMqttTopics carry events regardless.
+                # A *total* refusal is the real failure — logged at ERROR below.
+                # Still visible via HA's debug toggle (manifest loggers cover us).
+                _LOGGER.debug("MQTT broker refused subscription to %s", topic)
             else:
                 _LOGGER.debug("MQTT subscribed to %s (QoS %d granted)", topic, code)
         if all(code == SUBACK_FAILURE for code in codes) and codes:

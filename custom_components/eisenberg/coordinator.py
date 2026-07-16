@@ -454,7 +454,12 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             len(outcome.results),
         )
         if outcome.refused_topics:
-            _LOGGER.warning("MQTT refused topic filters: %s", outcome.refused_topics)
+            # DEBUG, not WARNING: partial refusals are expected on grantee/shared
+            # or multi-base accounts (the broad d/{xCloudId}/out/# wildcard the
+            # guest doesn't own gets refused), and per-device allowedMqttTopics
+            # carry events regardless. Reachable via HA's debug toggle when
+            # someone actually wants to inspect the granted/refused breakdown.
+            _LOGGER.debug("MQTT refused topic filters: %s", outcome.refused_topics)
         user_topic = f"u/{self.client.user_id}/in/#"
         result = outcome.result_for(user_topic)
         verdict = "ABSENT" if result is None else ("GRANTED" if result.granted else "REFUSED")

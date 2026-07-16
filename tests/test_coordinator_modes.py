@@ -151,7 +151,10 @@ class TestSubackSummary:
             ]
         )
         coord._mqtt = SimpleNamespace(subscribe_outcome=outcome)  # type: ignore[attr-defined]
-        with caplog.at_level(logging.INFO):
+        # Capture at DEBUG: the granted/refused counts and user-topic verdict
+        # are INFO, but the refused-topics list is DEBUG (harmless partial
+        # refusals shouldn't alarm at WARNING — reachable via HA's debug toggle).
+        with caplog.at_level(logging.DEBUG):
             coord._log_subscribe_outcome()
         assert "1 granted, 2 refused of 3" in caplog.text
         assert "d/B/out/#" in caplog.text
