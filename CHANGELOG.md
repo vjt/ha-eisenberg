@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.10 — 2026-07-16
+
+### Fixed
+
+- **Options flow forced local media storage on just to reach the ffmpeg toggle
+  (#23).** The options form (Settings → Devices & Services → Eisenberg →
+  Configure) keyed its "Disabled" media-storage choice as the empty string,
+  which Home Assistant's form treats as an unset `Required` field — so the form
+  refused to submit unless a real storage directory was picked, coupling two
+  unrelated settings and blocking access to the new **Route live stream through
+  ffmpeg** toggle. The options flow now uses the same non-empty `__disabled__`
+  sentinel as the setup flow, shared through one helper so the two can't drift
+  again; archival can be left disabled and the ffmpeg toggle set on its own.
+  First test coverage of the options flow.
+
 ## 0.3.9 — 2026-07-15
 
 ### Added
