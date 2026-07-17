@@ -36,7 +36,7 @@ async def async_setup_entry(
     coordinator: EisenbergCoordinator = entry.runtime_data
 
     entities: list[BinarySensorEntity] = []
-    for device in coordinator.devices:
+    for device in coordinator.cameras:
         entities.append(MotionSensor(coordinator, device))
         entities.append(DetectionSensor(coordinator, device, "Person", entry))
         entities.append(DetectionSensor(coordinator, device, "Vehicle", entry))

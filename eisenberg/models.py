@@ -346,6 +346,13 @@ class StreamResponse(BaseModel):
     ice_servers: dict[str, Any] | None = Field(None, alias="iceServers")
 
 
+# Arlo deviceType values that denote base-station infrastructure — a hub that
+# gateways cameras — NOT a camera in its own right. Mirrors pyaarlo
+# (__init__.py): these never get a camera entity. Everything else (cameras,
+# doorbells, all-in-one arloq units) is camera-capable. Matched lowercased.
+_BASE_STATION_DEVICE_TYPES: frozenset[str] = frozenset({"basestation", "arlobridge", "hub"})
+
+
 class DeviceInfo(BaseModel):
     """Device info from the devices list API."""
 
@@ -356,6 +363,10 @@ class DeviceInfo(BaseModel):
     model_id: str = Field(alias="modelId")
     x_cloud_id: str = Field(alias="xCloudId")
     user_id: str | None = Field(None, alias="userId")
+    # Arlo device class: "camera", "doorbell", "basestation", "arlobridge",
+    # "arloq"/"arloqs", "hub", … Used to keep base stations out of the camera
+    # platform (issue #24). Absent on some accounts — then treated as a camera.
+    device_type: str | None = Field(None, alias="deviceType")
     # The controlling base station's deviceId. Base-station heartbeats
     # (d/{xCloudId}/out/basestation/is) carry the gateway id in `from`,
     # which equals this parentId — so connectivity is resolved by parent,
@@ -369,3 +380,14 @@ class DeviceInfo(BaseModel):
     allowed_mqtt_topics: list[str] = Field(default_factory=list, alias="allowedMqttTopics")
     properties: dict[str, Any] | None = None
     connectivity: dict[str, Any] | None = None
+
+    @property
+    def is_base_station(self) -> bool:
+        """True when this device is base-station infrastructure, not a camera.
+
+        A base gateways cameras but has no camera stream/snapshot of its own,
+        so enumerating it as a camera yields a bogus entity whose startStream
+        always fails (issue #24). Absent deviceType → treated as a camera: never
+        drop a real camera just because Arlo omitted the field.
+        """
+        return (self.device_type or "").lower() in _BASE_STATION_DEVICE_TYPES

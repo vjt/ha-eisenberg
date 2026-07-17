@@ -321,6 +321,84 @@ class TestDeviceInfo:
         )
         assert info.allowed_mqtt_topics == []
 
+    def test_device_type_parsed(self) -> None:
+        info = DeviceInfo.model_validate(
+            {
+                "deviceId": "BASE",
+                "deviceName": "Arlo Pro Basisstation",
+                "modelId": "VMB4000",
+                "xCloudId": "X",
+                "deviceType": "basestation",
+            }
+        )
+        assert info.device_type == "basestation"
+
+    def test_device_type_defaults_none(self) -> None:
+        info = DeviceInfo.model_validate(
+            {
+                "deviceId": "CAM",
+                "deviceName": "Cam",
+                "modelId": "VMC2052A",
+                "xCloudId": "X",
+            }
+        )
+        assert info.device_type is None
+
+
+class TestIsBaseStation:
+    """A base station is Arlo infrastructure, not a camera — it must not spawn
+    a camera/motion/snapshot entity (issue #24: DirkWeber1972's VMB4000 was
+    enumerated as a bogus, non-streamable camera → "Failed to start stream for
+    <baseId>"). Classification mirrors pyaarlo (__init__.py): only dedicated
+    base/bridge/hub deviceTypes are bases; everything else — cameras, doorbells,
+    all-in-one arloq units — is camera-capable. A NEGATIVE filter on purpose:
+    the safe failure mode is under-filtering (a base slips through, as today),
+    never dropping a real camera/doorbell.
+    """
+
+    @staticmethod
+    def _dev(device_type: str | None) -> DeviceInfo:
+        raw: dict[str, object] = {
+            "deviceId": "D",
+            "deviceName": "n",
+            "modelId": "M",
+            "xCloudId": "C",
+        }
+        if device_type is not None:
+            raw["deviceType"] = device_type
+        return DeviceInfo.model_validate(raw)
+
+    def test_basestation_is_base(self) -> None:
+        assert self._dev("basestation").is_base_station is True
+
+    def test_arlobridge_is_base(self) -> None:
+        assert self._dev("arlobridge").is_base_station is True
+
+    def test_hub_is_base(self) -> None:
+        assert self._dev("hub").is_base_station is True
+
+    def test_camera_is_not_base(self) -> None:
+        assert self._dev("camera").is_base_station is False
+
+    def test_doorbell_is_not_base(self) -> None:
+        # Doorbells must stay cameras (#10/#19) even if their deviceType is not
+        # literally "camera" — pyaarlo keys doorbells off modelId for exactly
+        # this reason, so a positive "==camera" allowlist would drop them.
+        assert self._dev("doorbell").is_base_station is False
+
+    def test_arloq_all_in_one_is_not_base(self) -> None:
+        # arloq/arloqs are their own base AND a camera; pyaarlo lists them as
+        # cameras, so they must keep their camera entity.
+        assert self._dev("arloq").is_base_station is False
+
+    def test_missing_device_type_is_not_base(self) -> None:
+        # Unknown/absent → default to camera. Never drop a real camera because
+        # Arlo omitted the field.
+        assert self._dev(None).is_base_station is False
+
+    def test_classification_is_case_insensitive(self) -> None:
+        assert self._dev("BaseStation").is_base_station is True
+
 
 class TestArloMode:
     def test_known_modes(self) -> None:

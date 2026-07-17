@@ -33,7 +33,7 @@ async def async_setup_entry(
     """Set up Eisenberg sensors."""
     coordinator: EisenbergCoordinator = entry.runtime_data
     entities: list[SensorEntity] = []
-    for device in coordinator.devices:
+    for device in coordinator.cameras:
         entities.append(BatterySensor(coordinator, device))
         entities.append(SignalStrengthSensor(coordinator, device))
     async_add_entities(entities)

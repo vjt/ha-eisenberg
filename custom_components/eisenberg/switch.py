@@ -25,7 +25,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Eisenberg switches."""
     coordinator: EisenbergCoordinator = entry.runtime_data
-    async_add_entities(SirenSwitch(coordinator, device) for device in coordinator.devices)
+    async_add_entities(SirenSwitch(coordinator, device) for device in coordinator.cameras)
 
 
 class SirenSwitch(CoordinatorEntity[EisenbergCoordinator], SwitchEntity):

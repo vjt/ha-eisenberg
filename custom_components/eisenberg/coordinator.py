@@ -156,6 +156,15 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def devices(self) -> list[DeviceInfo]:
         return self._devices
 
+    @property
+    def cameras(self) -> list[DeviceInfo]:
+        """Devices that get per-camera entities — every device except base
+        stations. Bases stay in `devices` (they gateway locations/connectivity
+        and each carries an MQTT subscription) but must never become cameras:
+        a base has no stream/snapshot, so its camera entity fails every
+        startStream (issue #24, DirkWeber1972's VMB4000)."""
+        return [d for d in self._devices if not d.is_base_station]
+
     def _mqtt_extra_topics(self) -> list[str]:
         """Union of every device's declared allowedMqttTopics, order-stable.
 
@@ -579,10 +588,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         for device in self._devices:
             _LOGGER.info(
-                "  device id=%s name=%r model=%s cloud=%s mqttTopics=%d",
+                "  device id=%s name=%r model=%s type=%s cloud=%s mqttTopics=%d",
                 device.device_id,
                 device.device_name,
                 device.model_id,
+                device.device_type,
                 device.x_cloud_id,
                 len(device.allowed_mqtt_topics),
             )
@@ -592,6 +602,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "  device %s allowedMqttTopics=%s",
                 device.device_id,
                 device.allowed_mqtt_topics,
+            )
+        bases = [d for d in self._devices if d.is_base_station]
+        if bases:
+            _LOGGER.info(
+                "Excluding %d base station(s) from camera entities (kept as "
+                "gateways for mode/connectivity): %s",
+                len(bases),
+                [d.device_id for d in bases],
             )
         if len(x_cloud_ids) > 1:
             _LOGGER.warning(

@@ -30,7 +30,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Eisenberg cameras."""
     coordinator: EisenbergCoordinator = entry.runtime_data
-    async_add_entities(EisenbergCamera(coordinator, device) for device in coordinator.devices)
+    async_add_entities(EisenbergCamera(coordinator, device) for device in coordinator.cameras)
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(

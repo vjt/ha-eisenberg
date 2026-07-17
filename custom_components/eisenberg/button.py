@@ -31,7 +31,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Eisenberg snapshot buttons."""
     coordinator: EisenbergCoordinator = entry.runtime_data
-    async_add_entities(SnapshotButton(coordinator, device) for device in coordinator.devices)
+    async_add_entities(SnapshotButton(coordinator, device) for device in coordinator.cameras)
 
 
 class SnapshotButton(CoordinatorEntity[EisenbergCoordinator], ButtonEntity):
