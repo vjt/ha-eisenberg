@@ -20,17 +20,17 @@ The authoritative list of blocked issues + who we're waiting on + the exact
 question each log must answer lives in **memory**: read
 `project_eisenberg_e2e_status` (the "WATCHED SET" / "Open threads" sections).
 Do NOT hardcode issue numbers here — they change. As of this skill's last
-edit (2026-07-16) the watched set is #15, #19, #20, #22, #23 (#21 closed —
-mode fix field-confirmed by RichDD on 0.3.9); e.g.:
+edit (2026-07-17) the watched set is **#19, #20, #22** (#15, #21, #23 all
+closed — released 0.3.11); e.g.:
 
-- **#15** — reporter `RichDD` — awaiting a **fresh debug log** from his 6-base
-  shared account to settle whether the refused `d/{x}/out/#` wildcards drive
-  the `MQTT disconnected`/`receive timeout` churn (→ drop-wildcard rework).
 - **#19** — reporter `mwebm` — awaiting a **motion-event** debug log to settle
   whether media archival needs a feed/live parse fix or a move to
   `library/add` / `mediaUploadNotification`. See [[arlo-mqtt-event-payloads]].
-- **#23** — reporter `HippoGlouton` — awaiting confirm the `ffmpeg_stream`
-  toggle turns his black 2K-camera view into a working live stream.
+- **#20** — reporter `scottdiprose-code` — awaiting **battery info** (camera
+  model, power type, whether `sensor.<cam>_battery` exists / its state,
+  integration+HA versions, startup log).
+- **#22** — reporter `blackside17` — awaiting **where connect fails** (config
+  flow / MFA / running), exact error, HA install type, outbound 443/8084.
 
 Cross-check against live state before arming — an issue may have been closed:
 ```bash
@@ -41,18 +41,35 @@ Only watch issues that are (a) open and (b) blocked on a reporter, per memory.
 ## Step 2 — Poll each watched issue
 
 For each watched issue, the signal is: **the last comment author is the
-reporter, not `vjt`** (we always comment last when we hand off). One-liner:
+reporter, not `vjt`** (we always comment last when we hand off). Poll the last
+comment AND its edit timestamp:
 
 ```bash
-for iss in 19 21; do
+for iss in 19 20 22; do
   gh api "repos/vjt/ha-eisenberg/issues/$iss/comments" \
-    --jq "last | \"ISSUE$iss last: \(.user.login) @ \(.created_at)\""
+    --jq "last | \"ISSUE$iss last: \(.user.login) created=\(.created_at) edited=\(.updated_at)\""
 done
 ```
 
 - Last author `vjt` → still blocked, no reply. Report "still blocked, no
   reporter reply" for that issue and move on.
 - Last author is the reporter → **they replied**. Go to Step 3.
+
+**Edit-aware cross-check (don't skip):** the last-author heuristic misses a
+reporter who *edits an earlier comment* to add a log/confirmation — the edit
+doesn't change who commented last. So also diff each issue's `updatedAt`
+against its last-comment `created_at`:
+
+```bash
+gh issue list --repo vjt/ha-eisenberg --state open --json number,updatedAt
+```
+
+If `updatedAt` is newer than the last-comment `created_at` (and the last
+author is `vjt`), a comment was edited (or a reaction/label changed) — fetch
+the full thread with per-comment `updated_at` and check for a reporter edit
+before reporting "still blocked". (A #23 reply once landed in the gap between
+poll and action, and #15/#23 replies once arrived just after a poll — this
+cross-check plus the Step 3b re-check are why.)
 
 ## Step 3 — On a reporter reply: fetch, download, analyze
 
