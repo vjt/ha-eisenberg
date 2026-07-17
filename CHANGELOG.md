@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.12 — 2026-07-17
+
+### Fixed
+
+- **Base stations no longer appear as bogus cameras (#24).** Arlo's device list
+  returns base stations alongside cameras. The integration created a camera (and
+  motion/detection/battery/snapshot/siren/spotlight) entity for *every* device,
+  so a base station — which has no stream of its own — became a dead camera whose
+  live view failed on every open (`Failed to start stream for <baseId>`, recurring
+  in the log). Device type is now honoured: base stations (`basestation` /
+  `arlobridge` / `hub`) are kept as gateways for security-mode, connectivity and
+  MQTT, but no longer get camera or per-camera sensor entities. Accounts without a
+  separate base station (the camera is its own base) are unaffected. The startup
+  log now records each device's type and any base stations excluded.
+
 ## 0.3.11 — 2026-07-16
 
 ### Changed
