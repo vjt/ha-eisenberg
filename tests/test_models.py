@@ -6,12 +6,16 @@ Arlo system. See docs/specs/2026-04-05-eisenberg-design.md for context.
 
 from typing import ClassVar
 
+import pytest
+from pydantic import ValidationError
+
 from eisenberg.models import (
     ActiveMode,
     ArloMode,
     Connectivity,
     DeviceInfo,
     DeviceState,
+    LastImageSnapshotAvailable,
     LocationInfo,
     LocationState,
     MediaUpload,
@@ -212,6 +216,24 @@ class TestSnapshotAvailable:
             }
         )
         assert snap.presigned_url == "https://example.com/snap.jpg"
+
+
+class TestLastImageSnapshotAvailable:
+    """Issue #26 — some models answer a snapshot request on
+    `lastImageSnapshotAvailable` with presignedLastImageUrl instead of
+    `fullFrameSnapshotAvailable` with presignedFullFrameSnapshotUrl.
+    """
+
+    def test_parse(self) -> None:
+        snap = LastImageSnapshotAvailable.model_validate(
+            {"presignedLastImageUrl": "https://example.com/last.jpg"}
+        )
+        assert snap.presigned_url == "https://example.com/last.jpg"
+
+    def test_missing_url_rejected(self) -> None:
+        # Parse at the boundary — a payload without the URL is not a snapshot.
+        with pytest.raises(ValidationError):
+            LastImageSnapshotAvailable.model_validate({})
 
 
 class TestMediaUpload:

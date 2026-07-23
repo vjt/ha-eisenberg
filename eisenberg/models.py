@@ -286,6 +286,20 @@ class SnapshotAvailable(BaseModel):
     disable_privacy_zones: bool | None = Field(None, alias="disablePrivacyZones")
 
 
+class LastImageSnapshotAvailable(BaseModel):
+    """Snapshot URL notification from models that answer on
+    `lastImageSnapshotAvailable` rather than `fullFrameSnapshotAvailable`.
+
+    Same meaning as `SnapshotAvailable`, different property name. Some
+    cameras/doorbells reply here even when the request went out as a
+    fullFrameSnapshot (issue #26); pyaarlo keys off the same property.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    presigned_url: str = Field(alias="presignedLastImageUrl")
+
+
 class MediaUpload(BaseModel):
     """Media upload notification from MQTT."""
 

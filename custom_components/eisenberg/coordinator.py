@@ -38,6 +38,7 @@ from eisenberg.models import (
     ActiveMode,
     BasestationState,
     DeviceState,
+    LastImageSnapshotAvailable,
     LocationInfo,
     LocationState,
     MediaUpload,
@@ -726,6 +727,19 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._handle_snapshot,
         )
 
+        # Some models answer a snapshot request on `lastImageSnapshotAvailable`
+        # instead — same image, different property name — even when the request
+        # went out as a fullFrameSnapshot. Without this the reply falls through
+        # as an Unhandled topic and the tile never refreshes (issue #26).
+        self._mqtt.on(
+            "d/+/out/cameras/+/lastImageSnapshotAvailable",
+            self._handle_last_image_snapshot,
+        )
+        self._mqtt.on(
+            "d/+/out/doorbells/+/lastImageSnapshotAvailable",
+            self._handle_last_image_snapshot,
+        )
+
         # Siren state
         self._mqtt.on("d/+/out/siren/+/is", self._handle_siren)
 
@@ -811,6 +825,21 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 json.dumps(payload)[:500],
             )
 
+    async def _store_snapshot(self, device_id: str, url: str) -> None:
+        """Record, cache, archive a snapshot URL and refresh the entities.
+
+        Shared by both snapshot topics so the two delivery paths cannot
+        drift apart.
+        """
+        self.latest_snapshots[device_id] = url
+
+        # Cache bytes immediately — presigned URLs expire.
+        await self._cache_image_bytes(device_id, url)
+        # Archive if configured
+        await self._archive_media(device_id, url, "snapshot", "jpg")
+
+        self.async_set_updated_data(self.data or {})
+
     async def _handle_snapshot(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle snapshot available notification."""
         parts = topic.split("/")
@@ -821,18 +850,30 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         properties = payload.get("properties", {})
         try:
             snap = SnapshotAvailable.model_validate(properties)
-            self.latest_snapshots[device_id] = snap.presigned_url
             _LOGGER.debug("Snapshot available for %s", device_id)
-
-            # Cache bytes immediately — presigned URLs expire.
-            await self._cache_image_bytes(device_id, snap.presigned_url)
-            # Archive if configured
-            await self._archive_media(device_id, snap.presigned_url, "snapshot", "jpg")
-
-            self.async_set_updated_data(self.data or {})
+            await self._store_snapshot(device_id, snap.presigned_url)
         except Exception:
             _LOGGER.warning(
                 "Failed to parse snapshot for %s: %s",
+                device_id,
+                json.dumps(payload)[:500],
+            )
+
+    async def _handle_last_image_snapshot(self, topic: str, payload: dict[str, Any]) -> None:
+        """Handle a snapshot delivered on the lastImageSnapshotAvailable topic."""
+        parts = topic.split("/")
+        if len(parts) < 5:
+            return
+        device_id = parts[4]
+
+        properties = payload.get("properties", {})
+        try:
+            snap = LastImageSnapshotAvailable.model_validate(properties)
+            _LOGGER.debug("Last-image snapshot available for %s", device_id)
+            await self._store_snapshot(device_id, snap.presigned_url)
+        except Exception:
+            _LOGGER.warning(
+                "Failed to parse last-image snapshot for %s: %s",
                 device_id,
                 json.dumps(payload)[:500],
             )
