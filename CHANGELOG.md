@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.13 — 2026-07-23
+
+### Fixed
+
+- **On-demand snapshots now work on cameras that answer on
+  `lastImageSnapshotAvailable` (#26).** Arlo delivers a requested snapshot on one
+  of two MQTT topics depending on the model, and only one of them was subscribed.
+  On the models that use the other one the reply fell through as an unhandled
+  topic: the request succeeded and Arlo delivered the image, but the URL was never
+  recorded, the bytes were never cached or archived, and the camera tile never
+  refreshed — so both the `eisenberg.snapshot` service and the snapshot button
+  looked like they did nothing. Both topics are now handled, for cameras and
+  doorbells alike, and share one cache/archive path. Reported with a reproduction
+  log and a working local patch by @torselden.
+
 ## 0.3.12 — 2026-07-17
 
 ### Fixed
