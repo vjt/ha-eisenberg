@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.15 — 2026-07-25
+
+### Fixed
+
+- **Base stations are now registered with before being asked anything (#27).**
+  0.3.14 started asking hubs for their children's battery and connectivity, and
+  got silence back: the request went out, Arlo accepted it, and nothing ever
+  arrived. The missing half is that a base station publishes nothing at all to a
+  session that has not registered with it — being granted the device topic is a
+  subscription with Arlo's MQTT *broker*, not with the *hub*, so until the hub is
+  told to send events our way it stays mute and every question goes unanswered.
+  The integration now registers with each base station before asking it for
+  anything, and renews that registration on the periodic health check, because it
+  expires and a lapsed one silently stops all device reporting. The registration
+  is also a round trip to the hub, so its outcome now feeds the base-station
+  connectivity sensor directly. Accounts whose cameras are their own gateway
+  register with nobody and are unaffected. Field-tested by @Kevinbull888.
+
 ## 0.3.14 — 2026-07-25
 
 ### Fixed
