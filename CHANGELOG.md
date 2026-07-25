@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.17 — 2026-07-26
+
+### Fixed
+
+- **Base-station connectivity no longer sits at `unknown` when the answer is
+  already in the payload.** The device list reports a `connectionState` for each
+  device, and since 0.3.16 the integration read and understood it — but stored it
+  where the connectivity sensor does not look. On cameras that are their own
+  gateway this left `binary_sensor.*_base_station_connectivity` reading `unknown`
+  indefinitely, with the value present in every payload the whole time. It is now
+  stored keyed by the device it describes, so a base station's entry resolves the
+  cameras behind it and a base-less camera resolves itself.
+
 ## 0.3.16 — 2026-07-25
 
 ### Fixed
