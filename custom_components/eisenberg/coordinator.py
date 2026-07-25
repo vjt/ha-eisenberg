@@ -1133,6 +1133,13 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             if self._merge_device_state(device.device_id, state):
                 updated += 1
+            # The connectivity sensor reads a different map, keyed by the
+            # device the state describes (its gateway, per #14). Without
+            # this the value arrives, parses, and is filed where nothing
+            # looks for it — which is why a base-less camera's sensor sat
+            # at unknown while the answer was in the payload all along.
+            if state.connection_state is not None:
+                self.basestation_connection[device.device_id] = state.connection_state
 
         if updated:
             _LOGGER.debug("Refreshed properties for %d device(s)", updated)

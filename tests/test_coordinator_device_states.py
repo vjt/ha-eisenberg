@@ -343,3 +343,38 @@ class TestRenewalGuard:
         coord._last_base_bringup -= 10_000  # far enough in the past
         await coord._maybe_renew_base_stations()
         assert client.calls == [f"register:{BASE}", f"pull:{BASE}"]
+
+
+class TestConnectivityFromDeviceProperties:
+    """The REST device list carries `connectionState` for the device it
+    describes, but the connectivity sensor reads a different map — so the
+    value arrived, was parsed, and was filed where nothing looks for it.
+    On a base-less camera that left the sensor `unknown` forever, with the
+    answer sitting in the payload the whole time."""
+
+    async def test_connection_state_reaches_the_map_the_sensor_reads(self) -> None:
+        coord, _ = _coordinator_with_devices(
+            [_device(CAM_A, "camera", CAM_A)],
+            _FullClient([_device_with_props(CAM_A, {"connectionState": "available"})]),
+        )
+        await coord._refresh_device_properties()
+        assert coord.basestation_connection[CAM_A] == "available"
+
+    async def test_properties_without_connection_state_leave_it_alone(self) -> None:
+        coord, _ = _coordinator_with_devices(
+            [_device(CAM_A, "camera", CAM_A)],
+            _FullClient([_device_with_props(CAM_A, {"batteryLevel": 50})]),
+        )
+        coord.basestation_connection[CAM_A] = "available"
+        await coord._refresh_device_properties()
+        assert coord.basestation_connection[CAM_A] == "available"
+
+    async def test_a_base_reporting_itself_resolves_its_cameras(self) -> None:
+        """A camera resolves connectivity through its parent, so the base's
+        own entry is the one that matters on base-stationed accounts."""
+        coord, _ = _coordinator_with_devices(
+            [_device(BASE, "basestation", BASE), _device(CAM_A, "camera", BASE)],
+            _FullClient([_device_with_props(BASE, {"connectionState": "available"})]),
+        )
+        await coord._refresh_device_properties()
+        assert coord.basestation_connection[BASE] == "available"

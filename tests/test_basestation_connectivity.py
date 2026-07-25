@@ -83,3 +83,29 @@ class TestBasestationConnectivity:
         sensor._handle_coordinator_update()
 
         assert sensor._attr_is_on is False
+
+
+class TestConnectivityFromRestProperties:
+    """End-to-end guard for the base-less case: the sensor must actually
+    turn on from a value that only ever appears in the REST device list."""
+
+    def test_base_less_camera_turns_on_from_device_properties(self) -> None:
+        from custom_components.eisenberg.coordinator import EisenbergCoordinator
+
+        device = _device(CAMERA, None)
+        coord = EisenbergCoordinator.__new__(EisenbergCoordinator)
+        coord.basestation_connection = {}
+        coord.device_states = {}
+        coord.data = {}
+        coord.async_set_updated_data = lambda data: None  # type: ignore[method-assign]
+        coord.basestation_connection[CAMERA] = "available"
+
+        sensor = BasestationConnectivity.__new__(BasestationConnectivity)
+        sensor.coordinator = coord  # type: ignore[attr-defined]
+        sensor._device = device
+        sensor._attr_is_on = None
+        sensor.async_write_ha_state = lambda: None  # type: ignore[method-assign]
+
+        sensor._handle_coordinator_update()
+
+        assert sensor._attr_is_on is True
