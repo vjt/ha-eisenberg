@@ -223,3 +223,123 @@ class TestBaseStationBringUp:
             [_device(BASE, "basestation", BASE)], _RecordingClient(fail_pull=True)
         )
         await coord._bring_up_base_stations()  # must not raise
+
+
+class _FullClient(_RecordingClient):
+    """Adds the REST + snapshot surface the later fixes touch."""
+
+    def __init__(self, devices: list[DeviceInfo] | None = None, **kw: Any) -> None:
+        super().__init__(**kw)
+        self._rest_devices = devices or []
+        self.snapshots: list[str] = []
+        self.fail_get_devices = False
+
+    async def get_devices(self) -> list[DeviceInfo]:
+        self.calls.append("get_devices")
+        if self.fail_get_devices:
+            raise RuntimeError("Arlo said no")
+        return self._rest_devices
+
+    async def request_snapshot(self, device_id: str) -> None:
+        self.snapshots.append(device_id)
+
+
+def _device_with_props(device_id: str, props: dict[str, Any]) -> DeviceInfo:
+    return DeviceInfo.model_validate(
+        {
+            "deviceId": device_id,
+            "deviceName": f"Device {device_id}",
+            "modelId": "VMC5040",
+            "deviceType": "camera",
+            "xCloudId": CLOUD,
+            "parentId": BASE,
+            "properties": props,
+        }
+    )
+
+
+class TestRestDevicePropertiesRefresh:
+    """Old-style base-stationed cameras report battery in the REST devices
+    list, not over MQTT — and that list is only meaningful if we read it
+    more than once. pyaarlo re-reads it periodically (`_refresh_devices`)."""
+
+    async def test_battery_arrives_from_the_rest_payload(self) -> None:
+        coord, _ = _coordinator_with_devices(
+            [_device(CAM_A, "camera", BASE)],
+            _FullClient([_device_with_props(CAM_A, {"batteryLevel": 64})]),
+        )
+        await coord._refresh_device_properties()
+        assert coord.device_states[CAM_A].battery_level == 64
+
+    async def test_does_not_clobber_live_mqtt_state(self) -> None:
+        """A REST block carrying only battery must not wipe the activity
+        state MQTT just delivered."""
+        client = _FullClient([_device_with_props(CAM_A, {"batteryLevel": 64})])
+        coord, _ = _coordinator_with_devices([_device(CAM_A, "camera", BASE)], client)
+        await coord._handle_devices_response(
+            DEVICES_TOPIC, _payload({CAM_A: {"activityState": "userStreamActive"}})
+        )
+        await coord._refresh_device_properties()
+        assert coord.device_states[CAM_A].battery_level == 64
+        assert coord.device_states[CAM_A].activity_state == "userStreamActive"
+
+    async def test_a_failing_refresh_does_not_raise(self) -> None:
+        client = _FullClient([])
+        client.fail_get_devices = True
+        coord, _ = _coordinator_with_devices([_device(CAM_A, "camera", BASE)], client)
+        await coord._refresh_device_properties()  # must not raise
+
+    async def test_device_without_properties_is_skipped(self) -> None:
+        coord, _ = _coordinator_with_devices(
+            [_device(CAM_A, "camera", BASE)], _FullClient([_device(CAM_A, "camera", BASE)])
+        )
+        await coord._refresh_device_properties()
+        assert CAM_A not in coord.device_states
+
+
+class TestInitialSnapshots:
+    async def test_never_asks_a_base_station_for_a_snapshot(self) -> None:
+        """A base station is not a camera: Arlo answers error 4000
+        'Resource not found', which showed up as noise in the field."""
+        client = _FullClient()
+        coord, _ = _coordinator_with_devices(
+            [_device(BASE, "basestation", BASE), _device(CAM_A, "camera", BASE)], client
+        )
+        coord.mode_for_device = lambda device_id: "armHome"  # type: ignore[method-assign]
+        await coord._request_initial_snapshots()
+        assert client.snapshots == [CAM_A]
+
+
+class TestSubscriptionAck:
+    async def test_ack_confirms_the_base_is_reachable(self) -> None:
+        rec = _RecordingCoordinator()
+        await rec.coord._handle_subscription_ack(
+            f"d/{CLOUD}/out/subscriptions/USER_web/is",
+            {
+                "from": BASE,
+                "to": "USER_web",
+                "action": "is",
+                "resource": "subscriptions/USER_web",
+                "properties": {"devices": [BASE]},
+            },
+        )
+        assert rec.coord.basestation_connection[BASE] == "available"
+
+
+class TestRenewalGuard:
+    async def test_health_tick_right_after_startup_does_not_re_register(self) -> None:
+        """Startup already registered; the first health refresh landing a
+        second later must not do it all again (it did, in the field)."""
+        coord, client = _coordinator_with_devices([_device(BASE, "basestation", BASE)])
+        await coord._bring_up_base_stations()
+        client.calls.clear()
+        await coord._maybe_renew_base_stations()
+        assert client.calls == []
+
+    async def test_renews_once_the_interval_has_passed(self) -> None:
+        coord, client = _coordinator_with_devices([_device(BASE, "basestation", BASE)])
+        await coord._bring_up_base_stations()
+        client.calls.clear()
+        coord._last_base_bringup -= 10_000  # far enough in the past
+        await coord._maybe_renew_base_stations()
+        assert client.calls == [f"register:{BASE}", f"pull:{BASE}"]

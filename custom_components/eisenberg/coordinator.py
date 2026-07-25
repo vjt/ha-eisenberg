@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -63,6 +64,11 @@ _LOGGER = logging.getLogger(__name__)
 
 # Health check interval (token refresh, device sync)
 HEALTH_CHECK_INTERVAL = timedelta(minutes=30)
+
+# Base-station event subscriptions expire. Renew a little inside the health
+# tick so a slow tick can never leave a gap, but not so eagerly that the
+# registration startup just made is immediately redone (issue #27).
+BASE_STATION_RENEW_INTERVAL = timedelta(minutes=25).total_seconds()
 
 
 def resolve_location_for_device(
@@ -152,6 +158,8 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.motion_events: dict[str, MotionEvent] = {}  # device_id -> last event
         # gateway_id -> last connectionState ("available" / "unavailable" / ...)
         self.basestation_connection: dict[str, str] = {}
+        # When we last registered with the base stations (monotonic seconds).
+        self._last_base_bringup: float = 0.0
 
     @property
     def devices(self) -> list[DeviceInfo]:
@@ -604,6 +612,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 device.device_id,
                 device.allowed_mqtt_topics,
             )
+            # The properties block is where base-stationed cameras carry
+            # battery and signal, so log it: when those entities stay
+            # unknown, this line says whether the data was ever there.
+            _LOGGER.debug(
+                "  device %s properties=%s",
+                device.device_id,
+                json.dumps(device.properties or {})[:500],
+            )
         bases = [d for d in self._devices if d.is_base_station]
         if bases:
             _LOGGER.info(
@@ -639,6 +655,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # subscription is live, so the reply has somewhere to land
             # (issue #27). No-op on base-less accounts.
             await self._bring_up_base_stations()
+            # Read the device list once more now that the hub knows about
+            # us: on base-stationed accounts the battery and signal values
+            # only show up in that payload after registration (issue #27).
+            if any(d.is_base_station for d in self._devices):
+                await self._refresh_device_properties()
 
         # Discover location + current mode + revision via v3 endpoints.
         # This runs before snapshot requests so we can skip them when the
@@ -683,19 +704,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             _LOGGER.warning("Could not fetch initial locations/mode", exc_info=True)
 
-        # Request initial snapshots only when the camera's own location is
-        # armed — Arlo refuses with error 4006 ("Invalid camera activity state
-        # change") if the camera is in standby, so polling it just generates
-        # noise. Gating per-device (not on a single global mode) is what makes
-        # this correct on multi-location accounts.
-        for device in self._devices:
-            mode = self.mode_for_device(device.device_id)
-            if mode and mode != "standby":
-                try:
-                    await self.client.request_snapshot(device.device_id)
-                    _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
-                except Exception:
-                    _LOGGER.debug("Could not request snapshot for %s", device.device_id)
+        await self._request_initial_snapshots()
 
         # Restore the dashboard tile from the archive and clean up old
         # files. Both are no-ops when media archival is disabled.
@@ -778,6 +787,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # narrow route, not a `devices/#` catch-all: an unexpected shape
         # must keep surfacing through the Unhandled MQTT topic log.
         self._mqtt.on("d/+/out/devices/is", self._handle_devices_response)
+
+        # The base station's acknowledgement of our event subscription.
+        self._mqtt.on("d/+/out/subscriptions/+/is", self._handle_subscription_ack)
 
         # Geofence configuration push — informational only, just absorb
         # the topic so it doesn't show up as Unhandled.
@@ -1057,7 +1069,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     json.dumps(cast("dict[str, Any]", props))[:300],
                 )
                 continue
-            self.device_states[device_id] = state
+            self._merge_device_state(device_id, state)
             # Keyed by the device the block describes, so the base's own
             # entry lands under the gateway id the connectivity sensor
             # resolves against (parentId, per #14).
@@ -1068,6 +1080,106 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if updated:
             _LOGGER.info("Base station reported state for %d device(s)", updated)
             self.async_set_updated_data(self.data or {})
+
+    def _merge_device_state(self, device_id: str, incoming: DeviceState) -> bool:
+        """Fold the non-null fields of `incoming` onto the stored state.
+
+        State reaches us in partial blocks from several sources — a hub
+        reply carrying only battery must not wipe the activity state MQTT
+        delivered a second earlier.
+        """
+        updates = incoming.model_dump(exclude_none=True)
+        if not updates:
+            return False
+        current = self.device_states.get(device_id)
+        self.device_states[device_id] = (
+            incoming if current is None else current.model_copy(update=updates)
+        )
+        return True
+
+    async def _refresh_device_properties(self) -> None:
+        """Re-read the REST device list and apply each device's properties.
+
+        Cameras behind an old-style base station report battery and signal
+        in this payload rather than pushing them over MQTT, and the values
+        appear once the hub has populated them — so reading the list only at
+        startup, as we did, can miss them forever (issue #27). pyaarlo
+        re-reads it on a timer for exactly this reason (`_refresh_devices`),
+        noting that newer devices carry state here and older ones do not.
+        """
+        try:
+            devices = await self.client.get_devices()
+        except Exception:
+            _LOGGER.warning("Could not re-read the device list", exc_info=True)
+            return
+
+        updated = 0
+        for device in devices:
+            props = device.properties
+            if not props:
+                continue
+            try:
+                state = DeviceState.model_validate(props)
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to parse device properties for %s: %s",
+                    device.device_id,
+                    json.dumps(props)[:300],
+                )
+                continue
+            if self._merge_device_state(device.device_id, state):
+                updated += 1
+
+        if updated:
+            _LOGGER.debug("Refreshed properties for %d device(s)", updated)
+            self.async_set_updated_data(self.data or {})
+
+    async def _request_initial_snapshots(self) -> None:
+        """Seed the tiles, for cameras only.
+
+        Only when the camera's own location is armed — Arlo refuses with
+        error 4006 ("Invalid camera activity state change") in standby, so
+        asking just generates noise. Gating per-device (not on a single
+        global mode) is what makes this correct on multi-location accounts.
+
+        Base stations are excluded because they are not cameras: asking one
+        for a snapshot earns an Arlo error 4000 ("Resource not found"),
+        which is exactly what turned up in a reporter's log.
+        """
+        for device in self.cameras:
+            mode = self.mode_for_device(device.device_id)
+            if mode and mode != "standby":
+                try:
+                    await self.client.request_snapshot(device.device_id)
+                    _LOGGER.debug("Requested initial snapshot for %s", device.device_id)
+                except Exception:
+                    _LOGGER.debug("Could not request snapshot for %s", device.device_id)
+
+    async def _handle_subscription_ack(self, topic: str, payload: dict[str, Any]) -> None:
+        """A base station confirming it will publish events to this session.
+
+        Arrives after `register_event_subscription`. Beyond confirming the
+        registration was honoured, it is the hub speaking to us directly, so
+        it doubles as proof the hub is reachable (issue #27).
+        """
+        base_id = payload.get("from")
+        if not isinstance(base_id, str):
+            return
+        _LOGGER.debug("Base station %s confirmed our event subscription", base_id)
+        if self.basestation_connection.get(base_id) != "available":
+            self.basestation_connection[base_id] = "available"
+            self.async_set_updated_data(self.data or {})
+
+    async def _maybe_renew_base_stations(self) -> None:
+        """Renew the base-station registrations, unless one was just made.
+
+        The health refresh fires seconds after startup has already brought
+        the base stations up, and repeating it there registered and pulled
+        twice on every boot.
+        """
+        if time.monotonic() - self._last_base_bringup < BASE_STATION_RENEW_INTERVAL:
+            return
+        await self._bring_up_base_stations()
 
     async def _bring_up_base_stations(self) -> None:
         """Register with every base station, then ask it for its state.
@@ -1086,6 +1198,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         and already report battery and signal over REST — those accounts
         register with nobody and are untouched by any of this.
         """
+        self._last_base_bringup = time.monotonic()
         changed = False
         for device in self._devices:
             if not device.is_base_station:
@@ -1280,11 +1393,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.exception("MQTT reconnect failed")
                 self._mqtt = None
 
-        # Base-station event subscriptions expire, so renew them on every
-        # health tick — a lapsed one silently stops all device reporting
-        # (issue #27). Refreshes their state while we're there. No-op on
-        # base-less accounts.
-        await self._bring_up_base_stations()
+        # Base-station event subscriptions expire, so renew them — a lapsed
+        # one silently stops all device reporting (issue #27). Skipped when
+        # startup has just done it. No-op on base-less accounts.
+        await self._maybe_renew_base_stations()
+
+        # Battery and signal for base-stationed cameras live in the REST
+        # device list, which only tells us anything if we read it again.
+        await self._refresh_device_properties()
 
         return {}
 
