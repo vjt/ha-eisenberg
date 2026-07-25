@@ -633,6 +633,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._register_mqtt_handlers()
             await self._mqtt.connect()
             self._log_subscribe_outcome()
+            # Old-style base stations hold their children's battery, signal
+            # and connectionState and only report them on request. Ask now
+            # that the subscription is live, so the reply has somewhere to
+            # land (issue #27). No-op on base-less accounts.
+            await self._pull_base_station_states()
 
         # Discover location + current mode + revision via v3 endpoints.
         # This runs before snapshot requests so we can skip them when the
@@ -764,6 +769,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Per-device states broadcast — activeMode mirrors the automation
         # topic in friendly name form, plus motionStart actions config.
         self._mqtt.on("d/+/out/devices/+/states/is", self._handle_device_states)
+
+        # A base station's answer to our `{action: get, resource: devices}`
+        # pull. Arlo derives the topic from the reply's resource, so the
+        # bare `devices` resource lands one segment up from the per-device
+        # `devices/{id}/states` route above (issue #27). Deliberately a
+        # narrow route, not a `devices/#` catch-all: an unexpected shape
+        # must keep surfacing through the Unhandled MQTT topic log.
+        self._mqtt.on("d/+/out/devices/is", self._handle_devices_response)
 
         # Geofence configuration push — informational only, just absorb
         # the topic so it doesn't show up as Unhandled.
@@ -1008,6 +1021,75 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _handle_connectivity(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle connectivity updates."""
         _LOGGER.debug("Connectivity update: %s", json.dumps(payload)[:200])
+
+    async def _handle_devices_response(self, topic: str, payload: dict[str, Any]) -> None:
+        """Handle a base station's answer to `{action: get, resource: devices}`.
+
+        Shape: `{"resource": "devices", "devices": {deviceId: {props}}}` —
+        one property block per gatewayed device. For cameras behind an
+        old-style base station this is the ONLY way battery, signal strength
+        and connectionState ever arrive: the hub never pushes them
+        unsolicited (issue #27). pyaarlo dispatches the same shape in
+        backend.py `_event_dispatcher` under `resource == 'devices'`.
+        """
+        if payload.get("resource") != "devices":
+            return
+        raw_devices: Any = payload.get("devices")
+        if not isinstance(raw_devices, dict):
+            return
+
+        updated = 0
+        for device_id, props in cast("dict[str, Any]", raw_devices).items():
+            if not isinstance(props, dict):
+                _LOGGER.warning(
+                    "Base station reported a non-object state block for %s: %s",
+                    device_id,
+                    json.dumps(props)[:200],
+                )
+                continue
+            try:
+                state = DeviceState.model_validate(props)
+            except Exception:
+                _LOGGER.warning(
+                    "Failed to parse base station state for %s: %s",
+                    device_id,
+                    json.dumps(cast("dict[str, Any]", props))[:300],
+                )
+                continue
+            self.device_states[device_id] = state
+            # Keyed by the device the block describes, so the base's own
+            # entry lands under the gateway id the connectivity sensor
+            # resolves against (parentId, per #14).
+            if state.connection_state is not None:
+                self.basestation_connection[device_id] = state.connection_state
+            updated += 1
+
+        if updated:
+            _LOGGER.info("Base station reported state for %d device(s)", updated)
+            self.async_set_updated_data(self.data or {})
+
+    async def _pull_base_station_states(self) -> None:
+        """Ask every base station for the state of the devices it gateways.
+
+        Base-less cameras are their own gateway and already report battery
+        and signal in the REST devices payload, so accounts without a base
+        station ask nobody and nothing changes for them (issue #27).
+        """
+        for device in self._devices:
+            if not device.is_base_station:
+                continue
+            try:
+                await self.client.request_device_states(device.device_id)
+                _LOGGER.debug(
+                    "Requested device states from base station %s",
+                    device.device_id,
+                )
+            except Exception:
+                _LOGGER.warning(
+                    "Could not pull device states from base station %s",
+                    device.device_id,
+                    exc_info=True,
+                )
 
     async def _handle_device_states(self, topic: str, payload: dict[str, Any]) -> None:
         """Per-device state broadcast — currently we only care about activeMode.

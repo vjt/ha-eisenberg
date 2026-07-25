@@ -347,3 +347,62 @@ class TestGetDevicesDedup:
         # The real camera is untouched.
         assert "CAM" in ids
         assert len(devices) == 2
+
+
+class TestRequestDeviceStates:
+    """Issue #27: ask an old-style base station for its children's state.
+
+    Cameras behind a real base station (VMB5000 SmartHub) keep battery,
+    signal and connectionState on the hub, which publishes them only when
+    asked. pyaarlo sends this exact notify from base.py `update_states()`.
+    """
+
+    @staticmethod
+    def _client_with_base() -> EisenbergClient:
+        client = make_authed_client()
+        client._device_cloud_ids["BASE-1"] = "XCLOUD-1"
+        client._device_parent_ids["BASE-1"] = "BASE-1"
+        return client
+
+    async def test_asks_the_base_for_the_devices_resource(self) -> None:
+        with aioresponses() as m:
+            m.post(
+                f"{MYAPI}/hmsweb/users/devices/notify/BASE-1",
+                payload={"success": True},
+            )
+            async with self._client_with_base() as client:
+                await client.request_device_states("BASE-1")
+
+            req = next(iter(m.requests.values()))[0]
+            body = (
+                json.loads(req.kwargs["json"])
+                if isinstance(req.kwargs.get("json"), str)
+                else req.kwargs["json"]
+            )
+            assert body["action"] == "get"
+            assert body["resource"] == "devices"
+            assert body["to"] == "BASE-1"
+
+    async def test_asks_arlo_to_publish_the_reply_on_the_event_stream(self) -> None:
+        """The notify HTTP body carries no state — the answer arrives over
+        MQTT, so the request must opt into having it published."""
+        with aioresponses() as m:
+            m.post(
+                f"{MYAPI}/hmsweb/users/devices/notify/BASE-1",
+                payload={"success": True},
+            )
+            async with self._client_with_base() as client:
+                await client.request_device_states("BASE-1")
+
+            req = next(iter(m.requests.values()))[0]
+            assert req.kwargs["json"]["publishResponse"] is True
+
+    async def test_failure_raises(self) -> None:
+        with aioresponses() as m:
+            m.post(
+                f"{MYAPI}/hmsweb/users/devices/notify/BASE-1",
+                payload={"success": False, "data": {"error": "nope"}},
+            )
+            with pytest.raises(APIError):
+                async with self._client_with_base() as client:
+                    await client.request_device_states("BASE-1")

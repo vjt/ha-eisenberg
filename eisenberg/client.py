@@ -733,6 +733,39 @@ class EisenbergClient:
         if not body.get("success"):
             _raise_for_arlo_error(body, "set_spotlight")
 
+    async def request_device_states(self, base_id: str) -> None:
+        """Ask a base station to report the state of the devices it gateways.
+
+        Cameras behind a real base station keep battery, signal strength and
+        connectionState on the hub, and the hub publishes them only when
+        asked — nothing arrives unsolicited (issue #27). Mirrors pyaarlo's
+        `ArloBase.update_states()`, which sends this same notify to devices
+        whose deviceType is basestation/arlobridge.
+
+        The answer is not in this response body: it comes back over the event
+        stream as `{"resource": "devices", "devices": {deviceId: props}}`,
+        which is what publishResponse asks for.
+        """
+        if self.token is None:
+            raise RuntimeError("Not authenticated")
+
+        async with self.session.post(
+            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{base_id}",
+            headers=self._device_headers(self.token, base_id),
+            json={
+                "from": f"{self.user_id}_web",
+                "to": base_id,
+                "action": "get",
+                "resource": "devices",
+                "publishResponse": True,
+                "transId": f"web!states!{int(time.time())}",
+            },
+        ) as resp:
+            body = await resp.json()
+
+        if not body.get("success"):
+            _raise_for_arlo_error(body, "request_device_states")
+
     async def set_siren(self, device_id: str, *, on: bool) -> None:
         """Turn siren on or off."""
         if self.token is None:

@@ -64,6 +64,7 @@ class DeviceState(BaseModel):
     signal_strength: int | None = Field(None, alias="signalStrength")
     battery_level: int | None = Field(None, alias="batteryLevel")
     charging_state: str | None = Field(None, alias="chargingState")
+    connection_state: str | None = Field(None, alias="connectionState")
 
 
 class MediaMeta(BaseModel):

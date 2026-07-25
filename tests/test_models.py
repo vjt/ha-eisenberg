@@ -68,6 +68,17 @@ class TestDeviceState:
         assert state.battery_level == 17
         assert state.charging_state == "Off"
 
+    def test_connection_state(self) -> None:
+        """Base stations report their children's link state in the same
+        property block they answer `{action: get, resource: devices}` with
+        (issue #27)."""
+        state = DeviceState.model_validate(
+            {
+                "connectionState": "available",
+            }
+        )
+        assert state.connection_state == "available"
+
 
 class TestMotionEvent:
     PAYLOAD: ClassVar[dict[str, object]] = {
