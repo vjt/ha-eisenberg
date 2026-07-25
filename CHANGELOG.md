@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.14 — 2026-07-25
+
+### Fixed
+
+- **Battery and base-station connectivity no longer stay `unknown` on cameras
+  behind a base station (#27).** Cameras that hang off a real base station
+  (VMB5000 SmartHub and friends) keep their battery level, signal strength and
+  connection state on the hub, and the hub reports them only when asked. The
+  integration subscribed to the event stream and waited for a push that was
+  never coming, so those entities sat at `unknown` forever — silently, with
+  nothing in the log, because nothing was actually failing. Base stations are
+  now asked for their children's state once the subscription is live, and the
+  reply feeds the battery, signal and connectivity entities. Cameras that are
+  their own gateway already report this over REST and are unaffected. Reported
+  with a debug log that pinned it down by @Kevinbull888.
+
 ## 0.3.13 — 2026-07-23
 
 ### Fixed
