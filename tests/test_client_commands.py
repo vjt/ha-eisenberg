@@ -406,3 +406,50 @@ class TestRequestDeviceStates:
             with pytest.raises(APIError):
                 async with self._client_with_base() as client:
                     await client.request_device_states("BASE-1")
+
+
+class TestRegisterEventSubscription:
+    """Issue #27, second half: a base station publishes nothing to a session
+    that has not registered with it.
+
+    The broker granting `d/{xCloudId}/out/#` is not enough — that is a
+    subscription with Arlo's MQTT broker, not with the hub. Until the hub is
+    told to publish to `{userId}_web`, it stays silent and every pull goes
+    unanswered. pyaarlo registers in base.py `_ping_and_check_reply()`.
+    """
+
+    @staticmethod
+    def _client_with_base() -> EisenbergClient:
+        client = make_authed_client()
+        client._device_cloud_ids["BASE-1"] = "XCLOUD-1"
+        client._device_parent_ids["BASE-1"] = "BASE-1"
+        return client
+
+    async def test_registers_this_session_with_the_base(self) -> None:
+        with aioresponses() as m:
+            m.post(
+                f"{MYAPI}/hmsweb/users/devices/notify/BASE-1",
+                payload={"success": True},
+            )
+            async with self._client_with_base() as client:
+                await client.register_event_subscription("BASE-1")
+
+            req = next(iter(m.requests.values()))[0]
+            body = (
+                json.loads(req.kwargs["json"])
+                if isinstance(req.kwargs.get("json"), str)
+                else req.kwargs["json"]
+            )
+            assert body["action"] == "set"
+            assert body["resource"] == "subscriptions/USER-123_web"
+            assert body["properties"] == {"devices": ["BASE-1"]}
+
+    async def test_failure_raises_so_the_base_reads_unavailable(self) -> None:
+        with aioresponses() as m:
+            m.post(
+                f"{MYAPI}/hmsweb/users/devices/notify/BASE-1",
+                payload={"success": False, "data": {"error": "nope"}},
+            )
+            with pytest.raises(APIError):
+                async with self._client_with_base() as client:
+                    await client.register_event_subscription("BASE-1")

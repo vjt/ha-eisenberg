@@ -633,11 +633,12 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._register_mqtt_handlers()
             await self._mqtt.connect()
             self._log_subscribe_outcome()
-            # Old-style base stations hold their children's battery, signal
-            # and connectionState and only report them on request. Ask now
-            # that the subscription is live, so the reply has somewhere to
-            # land (issue #27). No-op on base-less accounts.
-            await self._pull_base_station_states()
+            # Old-style base stations publish nothing until this session
+            # registers with them, and hold their children's battery, signal
+            # and connectionState until asked. Do both now that the broker
+            # subscription is live, so the reply has somewhere to land
+            # (issue #27). No-op on base-less accounts.
+            await self._bring_up_base_stations()
 
         # Discover location + current mode + revision via v3 endpoints.
         # This runs before snapshot requests so we can skip them when the
@@ -1068,28 +1069,59 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info("Base station reported state for %d device(s)", updated)
             self.async_set_updated_data(self.data or {})
 
-    async def _pull_base_station_states(self) -> None:
-        """Ask every base station for the state of the devices it gateways.
+    async def _bring_up_base_stations(self) -> None:
+        """Register with every base station, then ask it for its state.
 
-        Base-less cameras are their own gateway and already report battery
-        and signal in the REST devices payload, so accounts without a base
-        station ask nobody and nothing changes for them (issue #27).
+        Order matters and is the whole fix: an old-style base station
+        publishes nothing to a session that has not registered with it, so
+        asking first and registering later leaves the question unanswered —
+        exactly what the field showed when only the pull shipped (#27).
+
+        The registration is also the only round trip we make to the hub
+        itself, so its outcome doubles as the connectivity signal: a reply
+        means the hub is reachable. pyaarlo derives base availability the
+        same way.
+
+        Base-less cameras are their own gateway, are published to directly
+        and already report battery and signal over REST — those accounts
+        register with nobody and are untouched by any of this.
         """
+        changed = False
         for device in self._devices:
             if not device.is_base_station:
                 continue
+            base_id = device.device_id
             try:
-                await self.client.request_device_states(device.device_id)
-                _LOGGER.debug(
-                    "Requested device states from base station %s",
-                    device.device_id,
+                await self.client.register_event_subscription(base_id)
+            except Exception:
+                _LOGGER.warning(
+                    "Base station %s did not accept our event subscription; "
+                    "it will not report device state",
+                    base_id,
+                    exc_info=True,
                 )
+                if self.basestation_connection.get(base_id) != "unavailable":
+                    self.basestation_connection[base_id] = "unavailable"
+                    changed = True
+                # Nothing will answer, so don't bother asking.
+                continue
+
+            if self.basestation_connection.get(base_id) != "available":
+                self.basestation_connection[base_id] = "available"
+                changed = True
+
+            try:
+                await self.client.request_device_states(base_id)
+                _LOGGER.debug("Requested device states from base station %s", base_id)
             except Exception:
                 _LOGGER.warning(
                     "Could not pull device states from base station %s",
-                    device.device_id,
+                    base_id,
                     exc_info=True,
                 )
+
+        if changed:
+            self.async_set_updated_data(self.data or {})
 
     async def _handle_device_states(self, topic: str, payload: dict[str, Any]) -> None:
         """Per-device state broadcast — currently we only care about activeMode.
@@ -1247,6 +1279,12 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 _LOGGER.exception("MQTT reconnect failed")
                 self._mqtt = None
+
+        # Base-station event subscriptions expire, so renew them on every
+        # health tick — a lapsed one silently stops all device reporting
+        # (issue #27). Refreshes their state while we're there. No-op on
+        # base-less accounts.
+        await self._bring_up_base_stations()
 
         return {}
 

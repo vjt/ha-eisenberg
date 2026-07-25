@@ -5,15 +5,24 @@ base-station connectivity stayed `unknown` forever, with no errors logged.
 His debug log showed the subscription to `d/{xCloudId}/out/#` GRANTED and yet
 not a single frame arriving on it — only user-topic media events.
 
-Root cause: cameras that hang off a real base station keep their state on the
-hub, and the hub only publishes it when asked. pyaarlo asks (base.py
-`update_states()` sends `{action: get, resource: devices}` to devices whose
-deviceType is basestation/arlobridge, commenting "Most new devices return
-their state from the devices URL but we need to query the original base
-stations for their child states"); we never did, so we sat waiting for a push
-that was never coming. Base-less cameras (the Essential XL test rig) are their
-own gateway and report state in the REST devices payload, which is why this
-never showed up locally.
+There are two halves to it, and shipping only the second one proved that in
+the field — the pull went out, Arlo accepted it, and still nothing came back.
+
+1. **Register with the hub.** A base station publishes nothing to a session
+   that has not registered with it. Being granted `d/{xCloudId}/out/#` is a
+   subscription with Arlo's *broker*, not with the *hub*; until the hub is
+   told to publish to `{userId}_web` it stays silent, so every question goes
+   unanswered. pyaarlo does this in base.py `_ping_and_check_reply()`, and
+   repeats it on refresh because the registration expires.
+2. **Ask for the state.** Children's battery, signal and connectionState live
+   on the hub and are only handed over on request — pyaarlo's base.py
+   `update_states()` sends `{action: get, resource: devices}`, commenting
+   "Most new devices return their state from the devices URL but we need to
+   query the original base stations for their child states".
+
+Base-less cameras (the Essential XL test rig) are their own gateway, are
+published to directly and report state in the REST devices payload, which is
+why none of this ever showed up locally.
 
 The reply comes back over the event stream — not in the notify HTTP body,
 which pyaarlo discards — as `{"resource": "devices", "devices": {id: props}}`,
@@ -72,22 +81,34 @@ class _RecordingCoordinator:
 
 
 class _RecordingClient:
-    """Client boundary: records which devices got asked for their state."""
+    """Client boundary: records what we asked each base, in order."""
 
-    def __init__(self, *, fail: bool = False) -> None:
-        self.asked: list[str] = []
-        self._fail = fail
+    def __init__(self, *, fail_register: bool = False, fail_pull: bool = False) -> None:
+        self.calls: list[str] = []
+        self._fail_register = fail_register
+        self._fail_pull = fail_pull
+
+    async def register_event_subscription(self, base_id: str) -> None:
+        self.calls.append(f"register:{base_id}")
+        if self._fail_register:
+            raise RuntimeError("Arlo said no")
 
     async def request_device_states(self, base_id: str) -> None:
-        self.asked.append(base_id)
-        if self._fail:
+        self.calls.append(f"pull:{base_id}")
+        if self._fail_pull:
             raise RuntimeError("Arlo said no")
 
 
-def _coordinator_with_devices(devices: list[DeviceInfo]) -> tuple[Any, _RecordingClient]:
+def _coordinator_with_devices(
+    devices: list[DeviceInfo], client: _RecordingClient | None = None
+) -> tuple[Any, _RecordingClient]:
     coord = EisenbergCoordinator.__new__(EisenbergCoordinator)
     coord._devices = devices
-    client = _RecordingClient()
+    coord.device_states = {}
+    coord.basestation_connection = {}
+    coord.data = {}
+    coord.async_set_updated_data = lambda data: None  # type: ignore[method-assign]
+    client = client or _RecordingClient()
     coord.client = client  # type: ignore[assignment]
     return coord, client
 
@@ -158,26 +179,47 @@ class TestDevicesResponseHandler:
         assert rec.pushes == 0
 
 
-class TestBaseStationStatePull:
-    async def test_asks_every_base_station(self) -> None:
+class TestBaseStationBringUp:
+    async def test_registers_before_asking_for_state(self) -> None:
+        """A base station publishes nothing to a session that never
+        registered, so the pull is useless until the subscription exists.
+        Order is the fix, not either call alone."""
         coord, client = _coordinator_with_devices(
-            [
-                _device(BASE, "basestation", BASE),
-                _device(CAM_A, "camera", BASE),
-                _device(CAM_B, "camera", BASE),
-            ]
+            [_device(BASE, "basestation", BASE), _device(CAM_A, "camera", BASE)]
         )
-        await coord._pull_base_station_states()
-        assert client.asked == [BASE]
+        await coord._bring_up_base_stations()
+        assert client.calls == [f"register:{BASE}", f"pull:{BASE}"]
 
     async def test_base_less_account_asks_nobody(self) -> None:
-        """Regression guard for the rig this fix cannot be tested on: a
+        """Regression guard for the rig this cannot be tested on: a
         base-less camera is its own gateway and already reports over REST."""
         coord, client = _coordinator_with_devices([_device(CAM_A, "camera", CAM_A)])
-        await coord._pull_base_station_states()
-        assert client.asked == []
+        await coord._bring_up_base_stations()
+        assert client.calls == []
+
+    async def test_successful_registration_marks_the_base_available(self) -> None:
+        """The registration's own outcome is a connectivity signal: it is
+        a round trip to the hub, so a reply means the hub is reachable."""
+        coord, _ = _coordinator_with_devices([_device(BASE, "basestation", BASE)])
+        await coord._bring_up_base_stations()
+        assert coord.basestation_connection[BASE] == "available"
+
+    async def test_failed_registration_marks_the_base_unavailable(self) -> None:
+        coord, _ = _coordinator_with_devices(
+            [_device(BASE, "basestation", BASE)], _RecordingClient(fail_register=True)
+        )
+        await coord._bring_up_base_stations()
+        assert coord.basestation_connection[BASE] == "unavailable"
+
+    async def test_failed_registration_skips_the_pointless_pull(self) -> None:
+        coord, client = _coordinator_with_devices(
+            [_device(BASE, "basestation", BASE)], _RecordingClient(fail_register=True)
+        )
+        await coord._bring_up_base_stations()
+        assert client.calls == [f"register:{BASE}"]
 
     async def test_a_failing_pull_does_not_break_startup(self) -> None:
-        coord, _ = _coordinator_with_devices([_device(BASE, "basestation", BASE)])
-        coord.client = _RecordingClient(fail=True)  # type: ignore[assignment]
-        await coord._pull_base_station_states()  # must not raise
+        coord, _ = _coordinator_with_devices(
+            [_device(BASE, "basestation", BASE)], _RecordingClient(fail_pull=True)
+        )
+        await coord._bring_up_base_stations()  # must not raise

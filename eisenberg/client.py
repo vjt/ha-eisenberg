@@ -733,6 +733,43 @@ class EisenbergClient:
         if not body.get("success"):
             _raise_for_arlo_error(body, "set_spotlight")
 
+    async def register_event_subscription(self, base_id: str) -> None:
+        """Tell a base station to publish events to this session.
+
+        Being granted `d/{xCloudId}/out/#` by the MQTT broker is NOT enough:
+        that is a subscription with Arlo's broker, not with the hub. An
+        old-style base station publishes nothing at all — no device states,
+        no heartbeat — until it has been told to send events to
+        `{userId}_web`, so every request to it goes unanswered and the topic
+        stays silent (issue #27). Mirrors pyaarlo's `ArloBase.ping()`.
+
+        The registration expires, so this is a keepalive: call it again on
+        the periodic health check, not just at startup.
+
+        A base-less camera is its own gateway and is published to directly,
+        which is why accounts without a base station never needed this.
+        """
+        if self.token is None:
+            raise RuntimeError("Not authenticated")
+
+        async with self.session.post(
+            f"{MYAPI_BASE}/hmsweb/users/devices/notify/{base_id}",
+            headers=self._device_headers(self.token, base_id),
+            json={
+                "from": f"{self.user_id}_web",
+                "to": base_id,
+                "action": "set",
+                "resource": f"subscriptions/{self.user_id}_web",
+                "publishResponse": False,
+                "transId": f"web!subscribe!{int(time.time())}",
+                "properties": {"devices": [base_id]},
+            },
+        ) as resp:
+            body = await resp.json()
+
+        if not body.get("success"):
+            _raise_for_arlo_error(body, "register_event_subscription")
+
     async def request_device_states(self, base_id: str) -> None:
         """Ask a base station to report the state of the devices it gateways.
 
