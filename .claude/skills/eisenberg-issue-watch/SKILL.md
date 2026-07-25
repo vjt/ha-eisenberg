@@ -16,21 +16,16 @@ skill to resume.
 
 ## Step 1 — Load state, discover what's actually open
 
-The authoritative list of blocked issues + who we're waiting on + the exact
-question each log must answer lives in **memory**: read
-`project_eisenberg_e2e_status` (the "WATCHED SET" / "Open threads" sections).
-Do NOT hardcode issue numbers here — they change. As of this skill's last
-edit (2026-07-17) the watched set is **#19, #20, #22** (#15, #21, #23 all
-closed — released 0.3.11); e.g.:
+The watched set lives in **memory**, never in this file: read
+`project_eisenberg_e2e_status` (the "WATCHED SET" / "Open threads" sections)
+for which issues are blocked, who each is waiting on, the exact question that
+issue's log must answer, and any per-reporter quirk (e.g. a reporter whose
+email-reply attachments GitHub strips, who must be told to upload via the web
+UI). Issue numbers, reporters and symptoms all churn — a list written here
+goes stale within days and then actively misleads, so keep this file about
+the *mechanism* and let memory carry the *state*.
 
-- **#19** — reporter `mwebm` — awaiting a **motion-event** debug log to settle
-  whether media archival needs a feed/live parse fix or a move to
-  `library/add` / `mediaUploadNotification`. See [[arlo-mqtt-event-payloads]].
-- **#20** — reporter `scottdiprose-code` — awaiting **battery info** (camera
-  model, power type, whether `sensor.<cam>_battery` exists / its state,
-  integration+HA versions, startup log).
-- **#22** — reporter `blackside17` — awaiting **where connect fails** (config
-  flow / MFA / running), exact error, HA install type, outbound 443/8084.
+A reopen of a closed issue counts as a reporter reply.
 
 Cross-check against live state before arming — an issue may have been closed:
 ```bash
@@ -45,7 +40,7 @@ reporter, not `vjt`** (we always comment last when we hand off). Poll the last
 comment AND its edit timestamp:
 
 ```bash
-for iss in 19 20 22; do
+for iss in $WATCHED; do   # $WATCHED = the set you just read from memory
   gh api "repos/vjt/ha-eisenberg/issues/$iss/comments" \
     --jq "last | \"ISSUE$iss last: \(.user.login) created=\(.created_at) edited=\(.updated_at)\""
 done
@@ -67,9 +62,20 @@ gh issue list --repo vjt/ha-eisenberg --state open --json number,updatedAt
 If `updatedAt` is newer than the last-comment `created_at` (and the last
 author is `vjt`), a comment was edited (or a reaction/label changed) — fetch
 the full thread with per-comment `updated_at` and check for a reporter edit
-before reporting "still blocked". (A #23 reply once landed in the gap between
-poll and action, and #15/#23 replies once arrived just after a poll — this
-cross-check plus the Step 3b re-check are why.)
+before reporting "still blocked". (Replies have landed in the gap between a
+poll and the action taken on it, and just after a poll — this cross-check
+plus the Step 3b re-check are why.)
+
+**New-issue detection (don't skip — the last-author heuristic is BLIND to it):**
+the per-issue poll only covers issues you already know about. A brand-new issue
+that nobody has told you about will never surface through it. The
+`gh issue list ... --state open` above already returns EVERY open number — so
+diff that list against your watched set on every poll. **Any open number not in
+the watched set is a NEW (or reopened) issue → triage it** (fetch title/body/
+comments, analyze, report; surface to vjt before commenting). This rule exists
+because new issues have sat unnoticed for days — opened, never in any watched
+set, invisible to the last-author check until a manual glance caught them.
+Bake the new-number check into the cron prompt too, not just the manual run.
 
 ## Step 3 — On a reporter reply: fetch, download, analyze
 
@@ -87,7 +93,9 @@ cross-check plus the Step 3b re-check are why.)
    - **Device enumeration / duplicate IDs:** `grep -nE "device id=|already exists"`
    - **SUBACK coverage:** `grep -niE "SUBACK|refused|granted|topic filter"`
    - **Mode / location routing:** `grep -niE "gatewayDeviceId|sharedLocation|not in gateway|set_active_mode|activeMode"`
-   - **Media path (#19):** `grep -niE "feed/live|library/add|mediaUpload|MotionEvent|eisenberg_media"`
+   - **Media path:** `grep -niE "feed/live|library/add|mediaUpload|MotionEvent|eisenberg_media"`
+   - **Unrouted events (a fix that shipped as a no-op):** `grep -n "Unhandled MQTT topic"`
+     — the payload is logged with it, so the topic we failed to route names its own fix.
 4. pyaarlo reference for cross-checking Arlo behavior: `~/code/ha/pyaarlo`.
 5. Report the finding, update `project_eisenberg_e2e_status` in memory, and (if
    it changes the fix plan) proceed per the user's direction. Do NOT auto-code a
@@ -113,8 +121,8 @@ gh api "repos/vjt/ha-eisenberg/issues/<N>/comments" \
 
 This applies to cron fires too: the state can move between the cron's poll and
 its comment. Re-check at **comment time**, not just at poll time. (This rule
-exists because a #23 reply from `HippoGlouton` landed between a poll and the
-next action and was nearly missed.)
+exists because a reporter's reply once landed between a poll and the next
+action, and was nearly missed.)
 
 ## Step 4 — Re-arm the session cron
 
