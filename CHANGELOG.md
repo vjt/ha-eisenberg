@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.16 — 2026-07-25
+
+### Fixed
+
+- **Battery is now read from the device list, repeatedly (#27).** With 0.3.15 the
+  hub started talking and connectivity came alive, but battery stayed `unknown`:
+  the request for the hub's stored device state drew no reply at all on a VMB5000,
+  while every other request to the same hub was answered. Battery for these
+  cameras lives in the REST device list instead — a list the integration read
+  exactly once, at startup, and then never again, so a value the hub populates
+  later could never arrive. It is now re-read on the periodic health check and
+  once at startup after registering. Incoming state also merges rather than
+  overwrites, so a block carrying only battery no longer wipes what was just
+  received over MQTT.
+- **The integration no longer asks base stations for a snapshot**, which earned
+  an Arlo error 4000 ("Resource not found") on every startup. A base station is
+  not a camera.
+- **The base station's subscription acknowledgement is now understood** instead of
+  being logged as an unhandled topic, and counts as proof the hub is reachable.
+- **Startup no longer registers with each base station twice**, a second apart.
+- Each device's properties block is logged when debug logging is on, so a camera
+  whose battery never appears can be diagnosed from the payload itself.
+
 ## 0.3.15 — 2026-07-25
 
 ### Fixed
