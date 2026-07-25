@@ -615,10 +615,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # The properties block is where base-stationed cameras carry
             # battery and signal, so log it: when those entities stay
             # unknown, this line says whether the data was ever there.
+            # Logged near-whole on purpose: truncating this to a couple of
+            # hundred characters cuts off exactly the keys it exists to
+            # reveal (the live payload puts signalStrength and
+            # connectionState well past the 500th character).
             _LOGGER.debug(
                 "  device %s properties=%s",
                 device.device_id,
-                json.dumps(device.properties or {})[:500],
+                json.dumps(device.properties or {})[:4000],
             )
         bases = [d for d in self._devices if d.is_base_station]
         if bases:
