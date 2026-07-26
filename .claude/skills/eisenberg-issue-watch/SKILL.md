@@ -14,68 +14,58 @@ skill to resume.
 `vjt/ha-eisenberg`. All `gh` calls target it explicitly:
 `gh api repos/vjt/ha-eisenberg/issues/<N>/comments`.
 
-## Step 1 — Load state, discover what's actually open
+## Step 1 — The open issue list IS the set
 
-The watched set lives in **memory**, never in this file: read
-`project_eisenberg_e2e_status` (the "WATCHED SET" / "Open threads" sections)
-for which issues are blocked, who each is waiting on, the exact question that
-issue's log must answer, and any per-reporter quirk (e.g. a reporter whose
-email-reply attachments GitHub strips, who must be told to upload via the web
-UI). Issue numbers, reporters and symptoms all churn — a list written here
-goes stale within days and then actively misleads, so keep this file about
-the *mechanism* and let memory carry the *state*.
+**Enumerate every open issue and poll all of them. There is no watched
+list.** Anything scoped to a remembered set of numbers cannot see an issue
+nobody has told you about — which is how several issues sat unnoticed for
+days here, opened and invisible until a manual glance caught them. A reopened
+issue has the same problem. Start from the repo, never from a list:
 
-A reopen of a closed issue counts as a reporter reply.
-
-Cross-check against live state before arming — an issue may have been closed:
 ```bash
-gh issue list --repo vjt/ha-eisenberg --state open --json number,title,labels
+gh issue list --repo vjt/ha-eisenberg --state open --json number,title,updatedAt
 ```
-Only watch issues that are (a) open and (b) blocked on a reporter, per memory.
 
-## Step 2 — Poll each watched issue
+That output is the complete set to poll this run. Every number in it gets
+checked; no number outside it exists.
 
-For each watched issue, the signal is: **the last comment author is the
-reporter, not `vjt`** (we always comment last when we hand off). Poll the last
-comment AND its edit timestamp:
+**Memory supplies context, not membership.** Read
+`project_eisenberg_e2e_status` for what a given issue is blocked on, the exact
+question its log must answer, and any per-reporter quirk (e.g. a reporter
+whose email-reply attachments GitHub strips, who must upload via the web UI).
+An open issue that memory says nothing about is not an error — it is a new one
+to triage. Never let memory's silence remove an issue from the poll.
+
+## Step 2 — Poll every open issue
+
+For each number from Step 1, fetch the last comment and its edit timestamp:
 
 ```bash
-for iss in $WATCHED; do   # $WATCHED = the set you just read from memory
+for iss in $(gh issue list --repo vjt/ha-eisenberg --state open --json number --jq '.[].number'); do
   gh api "repos/vjt/ha-eisenberg/issues/$iss/comments" \
-    --jq "last | \"ISSUE$iss last: \(.user.login) created=\(.created_at) edited=\(.updated_at)\""
+    --jq "if length==0 then \"ISSUE$iss: NO COMMENTS\" else (last | \"ISSUE$iss last: \(.user.login) created=\(.created_at) edited=\(.updated_at)\") end"
 done
 ```
 
-- Last author `vjt` → still blocked, no reply. Report "still blocked, no
-  reporter reply" for that issue and move on.
-- Last author is the reporter → **they replied**. Go to Step 3.
+Three outcomes, and every open issue lands in exactly one:
 
-**Edit-aware cross-check (don't skip):** the last-author heuristic misses a
-reporter who *edits an earlier comment* to add a log/confirmation — the edit
-doesn't change who commented last. So also diff each issue's `updatedAt`
-against its last-comment `created_at`:
+- **No comments at all** → nobody has answered it yet, including us. A brand-new
+  issue → triage it (Step 3, starting from the body rather than a reply).
+- **Last author is `vjt`** → still blocked on the reporter. Report it and move on.
+- **Last author is anyone else** → they replied. Go to Step 3.
 
-```bash
-gh issue list --repo vjt/ha-eisenberg --state open --json number,updatedAt
-```
+We always comment last when handing an issue off, which is what makes the
+`vjt`-is-last test mean "blocked". Keep it that way (see Notes).
 
-If `updatedAt` is newer than the last-comment `created_at` (and the last
-author is `vjt`), a comment was edited (or a reaction/label changed) — fetch
-the full thread with per-comment `updated_at` and check for a reporter edit
-before reporting "still blocked". (Replies have landed in the gap between a
-poll and the action taken on it, and just after a poll — this cross-check
-plus the Step 3b re-check are why.)
+**Edit-aware cross-check (don't skip):** a reporter who *edits an earlier
+comment* to add a log doesn't change who commented last. So compare each
+issue's `updatedAt` from Step 1 against its last comment's `created_at`. If
+`updatedAt` is newer while `vjt` is still the last author, something changed —
+an edit, a reaction, a label. Fetch the full thread with per-comment
+`updated_at` and look for a reporter edit before reporting "still blocked".
 
-**New-issue detection (don't skip — the last-author heuristic is BLIND to it):**
-the per-issue poll only covers issues you already know about. A brand-new issue
-that nobody has told you about will never surface through it. The
-`gh issue list ... --state open` above already returns EVERY open number — so
-diff that list against your watched set on every poll. **Any open number not in
-the watched set is a NEW (or reopened) issue → triage it** (fetch title/body/
-comments, analyze, report; surface to vjt before commenting). This rule exists
-because new issues have sat unnoticed for days — opened, never in any watched
-set, invisible to the last-author check until a manual glance caught them.
-Bake the new-number check into the cron prompt too, not just the manual run.
+Replies have landed in the gap between a poll and the action taken on it, and
+immediately after a poll — this cross-check plus the Step 3b re-check are why.
 
 ## Step 3 — On a reporter reply: fetch, download, analyze
 
@@ -131,14 +121,17 @@ Poll on a cadence with `CronCreate` (session-only, in-memory, dies on exit):
 - `cron`: `7 */4 * * *` (every 4h at :07 — off-minute on purpose; adjust if the
   user asked for a different cadence)
 - `recurring: true`
-- `prompt`: a self-contained instruction that repeats Steps 2–3 for the watched
-  issues — check last-comment author, and on a reporter reply download+analyze
-  the log and report; else report "still blocked".
+- `prompt`: a self-contained instruction that repeats Steps 1–3. **It must tell
+  the cron to enumerate the open issues itself, not to poll a list of numbers
+  baked into the prompt.** A prompt carrying a fixed set goes stale the moment
+  an issue is opened or closed, and re-creates exactly the blindness Step 1
+  exists to remove. Per-issue context (what each is waiting for) is fine to
+  include as background — just never as the source of *which* issues to check.
 
-Then confirm to the user: which issues are watched, the cadence, the cron job
-id (for `CronDelete`), and that it dies on `/clear` — the next session re-runs
-this skill to resume. If a reporter has **already** replied when you arm it,
-handle that reply now (Step 3) before scheduling.
+Then confirm to the user: the cadence, the cron job id (for `CronDelete`), what
+is currently open, and that it dies on `/clear` — the next session re-runs this
+skill to resume. If a reporter has **already** replied when you arm it, handle
+that reply now (Step 3) before scheduling.
 
 ## Notes
 
