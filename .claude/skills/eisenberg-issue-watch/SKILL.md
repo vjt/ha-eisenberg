@@ -118,8 +118,8 @@ action, and was nearly missed.)
 
 Poll on a cadence with `CronCreate` (session-only, in-memory, dies on exit):
 
-- `cron`: `7 */4 * * *` (every 4h at :07 — off-minute on purpose; adjust if the
-  user asked for a different cadence)
+- `cron`: `7 */12 * * *` (twice a day at :07 — vjt's chosen cadence; the
+  off-minute is deliberate. Adjust only if he asks for something different)
 - `recurring: true`
 - `prompt`: a self-contained instruction that repeats Steps 1–3. **It must tell
   the cron to enumerate the open issues itself, not to poll a list of numbers
