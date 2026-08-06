@@ -813,12 +813,18 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         properties = payload.get("properties") or payload.get("states", {})
         try:
             state = DeviceState.model_validate(properties)
-            self.device_states[device_id] = state
+            # Merge, never replace: these frames are partial. A block
+            # carrying only activityState must not wipe the battery and
+            # signal a base station handed us moments earlier — on
+            # hub-backed accounts that reply is the only source there is
+            # (issue #24).
+            self._merge_device_state(device_id, state)
             _LOGGER.debug(
-                "Camera %s state: motion=%s activity=%s",
+                "Camera %s state: motion=%s activity=%s raw=%s",
                 device_id,
                 state.motion_detected,
                 state.activity_state,
+                json.dumps(properties)[:4000],
             )
             raw_spot: Any = (
                 cast("dict[str, Any]", properties).get("spotlight")

@@ -35,10 +35,14 @@ one property block per child. See pyaarlo backend.py `_event_dispatcher`:
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from custom_components.eisenberg.coordinator import EisenbergCoordinator
 from eisenberg import DeviceInfo
+
+if TYPE_CHECKING:
+    import pytest
 
 BASE = "5GP59A7RA0411"
 CAM_A = "5GG39A71A13BD"
@@ -378,3 +382,68 @@ class TestConnectivityFromDeviceProperties:
         )
         await coord._refresh_device_properties()
         assert coord.basestation_connection[BASE] == "available"
+
+
+class TestCameraStateDoesNotClobberHubState:
+    """Issue #24 (DirkWeber1972, 11 cameras behind a VMB4000).
+
+    His 0.3.17 log has the whole #27 chain working — registration
+    acknowledged, `devices/is` answered, `Base station reported state for 11
+    device(s)` — and battery still `unknown` on 8 of 11 cameras. The reason
+    is 200 milliseconds wide: the hub fills battery and signal, then the
+    per-camera `cameras/{id}/is` frames land carrying only motion/activity
+    and REPLACE the stored state wholesale, before any entity has read it.
+    His REST device list returns `properties={}` for every device, so the
+    hub reply is the only source there is — and we threw it away.
+
+    `_merge_device_state` was added in 0.3.16 and wired into the two new
+    paths; this, the oldest and by far the busiest writer, kept assigning.
+    """
+
+    CAMERA_TOPIC = f"d/{CLOUD}/out/cameras/{CAM_A}/is"
+
+    def _coordinator(self) -> Any:
+        rec = _RecordingCoordinator()
+        rec.coord.spotlight_states = {}
+        return rec.coord
+
+    async def test_battery_from_the_hub_survives_a_camera_state_frame(self) -> None:
+        coord = self._coordinator()
+        await coord._handle_devices_response(
+            DEVICES_TOPIC, _payload({CAM_A: {"batteryLevel": 87, "signalStrength": 3}})
+        )
+        await coord._handle_camera_state(
+            self.CAMERA_TOPIC, {"properties": {"activityState": "idle"}}
+        )
+        assert coord.device_states[CAM_A].battery_level == 87
+        assert coord.device_states[CAM_A].signal_strength == 3
+
+    async def test_camera_frame_still_applies_its_own_fields(self) -> None:
+        coord = self._coordinator()
+        await coord._handle_devices_response(
+            DEVICES_TOPIC, _payload({CAM_A: {"batteryLevel": 87}})
+        )
+        await coord._handle_camera_state(
+            self.CAMERA_TOPIC, {"properties": {"motionDetected": True}}
+        )
+        assert coord.device_states[CAM_A].motion_detected is True
+
+    async def test_a_fresher_battery_reading_wins(self) -> None:
+        """Merging must not mean the first value sticks forever."""
+        coord = self._coordinator()
+        await coord._handle_devices_response(
+            DEVICES_TOPIC, _payload({CAM_A: {"batteryLevel": 87}})
+        )
+        await coord._handle_camera_state(self.CAMERA_TOPIC, {"properties": {"batteryLevel": 42}})
+        assert coord.device_states[CAM_A].battery_level == 42
+
+    async def test_raw_state_block_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The log that found this could not show what those frames carried:
+        we logged the two parsed fields and dropped the block. A field report
+        should never again be one unloggable payload away from an answer."""
+        coord = self._coordinator()
+        with caplog.at_level(logging.DEBUG):
+            await coord._handle_camera_state(
+                self.CAMERA_TOPIC, {"properties": {"batteryLevel": 42, "chargingState": "Off"}}
+            )
+        assert '"chargingState": "Off"' in caplog.text
