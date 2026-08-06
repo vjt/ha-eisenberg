@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 — 2026-08-06
+
+Base-stationed accounts have gone from unusable to working over 0.3.14–0.4.0 —
+hub registration, child-state pull, repeated device-list reads, connectivity
+routing, and now the fix that stops all of it from being thrown away moments
+after it arrives. That is a different integration for those users than 0.3.13
+was, so it gets a minor bump rather than a fifth patch.
+
+### Fixed
+
+- **Camera state updates no longer erase battery and signal (#24).** These frames
+  are partial — a camera announcing `activityState: idle` sends that and nothing
+  else — but they replaced the stored device state wholesale. On an account whose
+  cameras sit behind a base station this is fatal: the hub's reply is the only
+  place battery and signal ever come from (the REST device list returns an empty
+  property block for every device there), and the first per-camera frame arriving
+  a few hundred milliseconds later wiped it, before any entity had read it.
+  Battery then stayed `unknown` indefinitely on most cameras. Partial state is now
+  merged onto what is already known, as the device-list and hub paths already did.
+
+### Changed
+
+- Camera state frames are logged with their raw property block at DEBUG. The
+  report that uncovered the bug above could not show what those frames carried:
+  two parsed fields were logged and the payload discarded.
+
 ## 0.3.17 — 2026-07-26
 
 ### Fixed
