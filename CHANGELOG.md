@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 — 2026-08-07
+
+### Fixed
+
+- **The log no longer tells base-less accounts they have base stations (#29).**
+  A line counting the account's distinct xCloudIds called them base stations and
+  said so at WARNING — but a camera without a hub is its own gateway with its own
+  xCloudId, so three ordinary cameras produced a warning announcing three base
+  stations and asked the user to go and verify something that was never wrong. It
+  now says gateways, names how many are actual base stations when there are any,
+  and sits at INFO: spanning several gateways is the normal shape of both kinds of
+  account.
+
 ## 0.4.0 — 2026-08-06
 
 Base-stationed accounts have gone from unusable to working over 0.3.14–0.4.0 —
