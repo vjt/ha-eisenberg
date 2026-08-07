@@ -632,13 +632,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 len(bases),
                 [d.device_id for d in bases],
             )
-        if len(x_cloud_ids) > 1:
-            _LOGGER.warning(
-                "Account spans %d Arlo base stations — subscribing to all. "
-                "If any device entities stay unknown, verify their xCloudId is "
-                "in the subscribed list above.",
-                len(x_cloud_ids),
-            )
+        self._log_gateway_span()
 
         # Start MQTT
         if self.client.mqtt_url and self.client.user_id and self.client.token and x_cloud_ids:
@@ -801,6 +795,39 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Reconnect handler
         self._mqtt.on_disconnect(self._handle_mqtt_disconnect)
+
+    def _log_gateway_span(self) -> None:
+        """Record how many Arlo gateways the account is spread across.
+
+        A gateway is whatever an xCloudId belongs to: a base station, or a
+        base-less camera, which is its own. This used to count xCloudIds and
+        call them base stations at WARNING, so an account of three ordinary
+        cameras was told it had three base stations and asked to go and
+        check something that was never wrong (issue #29). Spanning several
+        gateways is the normal shape of both kinds of account — worth
+        stating, since it is the first thing to look at when one device's
+        events never arrive, and not worth warning about.
+        """
+        x_cloud_ids = list(dict.fromkeys(d.x_cloud_id for d in self._devices))
+        if len(x_cloud_ids) < 2:
+            return
+        bases = [d for d in self._devices if d.is_base_station]
+        if bases:
+            _LOGGER.info(
+                "Account spans %d Arlo gateways (%d base station(s)) — subscribing "
+                "to all. If a device's entities stay unknown, check its xCloudId is "
+                "among those subscribed above.",
+                len(x_cloud_ids),
+                len(bases),
+            )
+        else:
+            _LOGGER.info(
+                "Account spans %d Arlo gateways — subscribing to all. With no hub "
+                "each camera is its own gateway, so this is the expected shape. If "
+                "a device's entities stay unknown, check its xCloudId is among "
+                "those subscribed above.",
+                len(x_cloud_ids),
+            )
 
     async def _handle_camera_state(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle camera device state updates."""
