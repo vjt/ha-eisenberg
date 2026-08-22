@@ -8,6 +8,7 @@ list sync).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -23,7 +24,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from eisenberg import (
@@ -34,6 +35,7 @@ from eisenberg import (
     MQTTEventStream,
     RateLimitedError,
     SessionExpiredError,
+    TransientAPIError,
 )
 from eisenberg.models import (
     ActiveMode,
@@ -64,6 +66,14 @@ _LOGGER = logging.getLogger(__name__)
 
 # Health check interval (token refresh, device sync)
 HEALTH_CHECK_INTERVAL = timedelta(minutes=30)
+
+# How long to wait before each attempt to rebuild a dropped MQTT connection.
+# The health tick is a 30-minute floor on the deaf window, which is how a
+# 02:45 drop went unnoticed until the next morning (#32); a socket that just
+# died deserves a retry in seconds. Escalating so a broker that is genuinely
+# down is not hammered, and finite so a persistent outage falls back to the
+# health tick rather than looping forever.
+MQTT_RECONNECT_BACKOFF: tuple[float, ...] = (5.0, 15.0, 60.0, 180.0, 300.0)
 
 # Base-station event subscriptions expire. Renew a little inside the health
 # tick so a slow tick can never leave a gap, but not so eagerly that the
@@ -136,6 +146,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt: MQTTEventStream | None = None
         self._devices: list[DeviceInfo] = []
         self._http_session: aiohttp.ClientSession | None = None
+        # Serialises the two paths that can build the MQTT stream — the health
+        # tick and the post-disconnect backoff — so they cannot race a second
+        # one into existence and leave an orphan listening in the background.
+        self._mqtt_lock = asyncio.Lock()
+        self._reconnect_task: asyncio.Task[None] | None = None
 
         # Entity state — updated by MQTT handlers.
         self.device_states: dict[str, DeviceState] = {}
@@ -581,6 +596,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ) from err
         except (AuthenticationError, RateLimitedError) as err:
             raise ConfigEntryAuthFailed(str(err)) from err
+        except TransientAPIError as err:
+            # Arlo's edge blocked us rather than answering. The credentials
+            # are untested, so this is not a reauth — ask HA to retry setup.
+            raise ConfigEntryNotReady(str(err)) from err
 
         self._devices = await self.client.get_devices()
 
@@ -634,19 +653,13 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         self._log_gateway_span()
 
-        # Start MQTT
+        # Start MQTT. A failure here is not fatal to the account, only to this
+        # attempt — surface it as ConfigEntryNotReady so HA retries setup on
+        # its own backoff instead of leaving the entry up and deaf until the
+        # first health tick half an hour later.
         if self.client.mqtt_url and self.client.user_id and self.client.token and x_cloud_ids:
-            self._mqtt = MQTTEventStream(
-                mqtt_url=self.client.mqtt_url,
-                user_id=self.client.user_id,
-                token=self.client.token,
-                x_cloud_ids=x_cloud_ids,
-                extra_topics=self._mqtt_extra_topics(),
-                http_session=self._http_session,
-            )
-            self._register_mqtt_handlers()
-            await self._mqtt.connect()
-            self._log_subscribe_outcome()
+            if not await self._ensure_mqtt():
+                raise ConfigEntryNotReady("Could not connect to the Arlo event stream")
             # Old-style base stations publish nothing until this session
             # registers with them, and hold their children's battery, signal
             # and connectionState until asked. Do both now that the broker
@@ -793,8 +806,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the topic so it doesn't show up as Unhandled.
         self._mqtt.on("u/+/in/automation/geofences/is", self._handle_geofences)
 
-        # Reconnect handler
-        self._mqtt.on_disconnect(self._handle_mqtt_disconnect)
+        # Reconnect handler. Bound to *this* stream: the callback fires from
+        # the tail of a listen loop that may already have been replaced, and
+        # an unbound one would then clear the handle to its own successor.
+        stream = self._mqtt
+        self._mqtt.on_disconnect(lambda: self._handle_mqtt_disconnect(stream))
 
     def _log_gateway_span(self) -> None:
         """Record how many Arlo gateways the account is spread across.
@@ -1347,10 +1363,97 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         self.async_set_updated_data(self.data or {})
 
-    async def _handle_mqtt_disconnect(self) -> None:
-        """Handle MQTT disconnect — attempt reconnect."""
-        _LOGGER.warning("MQTT disconnected, will reconnect on next refresh")
+    async def _ensure_mqtt(self) -> bool:
+        """Bring the MQTT stream up if it is down. True when it is up.
+
+        The single place a stream gets built, shared by startup's successor
+        (the health tick) and the post-disconnect backoff, and serialised by
+        a lock so the two can never both build one. Idempotent by design: a
+        caller that finds the stream already alive gets True and no side
+        effects.
+
+        A failed connect clears the handle again — a half-built stream left
+        in place would make every later caller believe MQTT was connected
+        while no packet ever arrived.
+        """
+        async with self._mqtt_lock:
+            if self._mqtt is not None:
+                return True
+            if not self.client.mqtt_url:
+                return False
+            x_cloud_ids = list(dict.fromkeys(d.x_cloud_id for d in self._devices))
+            if not (
+                self.client.user_id and self.client.token and self._http_session and x_cloud_ids
+            ):
+                return False
+
+            _LOGGER.info("Connecting MQTT")
+            self._mqtt = MQTTEventStream(
+                mqtt_url=self.client.mqtt_url,
+                user_id=self.client.user_id,
+                token=self.client.token,
+                x_cloud_ids=x_cloud_ids,
+                extra_topics=self._mqtt_extra_topics(),
+                http_session=self._http_session,
+            )
+            self._register_mqtt_handlers()
+            try:
+                await self._mqtt.connect()
+            except Exception:
+                _LOGGER.exception("MQTT connect failed")
+                self._mqtt = None
+                return False
+            self._log_subscribe_outcome()
+            return True
+
+    async def _reconnect_mqtt_with_backoff(self) -> None:
+        """Rebuild the dropped stream on an escalating backoff.
+
+        Gives up after the last delay and leaves it to the health tick: at
+        that point the outage is not a blip, and a loop that never ends would
+        keep hitting an endpoint that is already refusing us — the exact way
+        an account gets flagged (#32).
+        """
+        for delay in MQTT_RECONNECT_BACKOFF:
+            await asyncio.sleep(delay)
+            if self._mqtt is not None:
+                return
+            if await self._ensure_mqtt():
+                _LOGGER.info("MQTT reconnected")
+                return
+        _LOGGER.warning(
+            "MQTT still down after %d attempts; the %d-minute health check will keep trying",
+            len(MQTT_RECONNECT_BACKOFF),
+            int(HEALTH_CHECK_INTERVAL.total_seconds() // 60),
+        )
+
+    async def _handle_mqtt_disconnect(self, stream: MQTTEventStream) -> None:
+        """Handle MQTT disconnect — start reconnecting on a backoff.
+
+        Waiting for the next health tick meant up to 30 minutes of silence
+        for a socket that dropped a second ago, and forever when the tick
+        itself was aborting early (#32).
+
+        The reconnect runs as its own background task rather than inline:
+        this callback is invoked from the tail of the dying listen loop, and
+        connect() spawns a new one — building it from inside its predecessor
+        is asking for the two to trip over each other. Background, not
+        tracked, so a pending backoff cannot hold up an HA shutdown; the
+        handle is kept so shutdown can cancel it.
+        """
+        if self._mqtt is not stream:
+            # A stream we have already replaced, unwinding late. Clearing the
+            # handle here would drop the live one on the floor.
+            _LOGGER.debug("Ignoring disconnect from a superseded MQTT stream")
+            return
+        _LOGGER.warning("MQTT disconnected — reconnecting")
         self._mqtt = None
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = self.hass.async_create_background_task(
+            self._reconnect_mqtt_with_backoff(),
+            name=f"{DOMAIN}_mqtt_reconnect",
+        )
 
     async def _archive_media(
         self,
@@ -1396,7 +1499,16 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.exception("Error archiving media %s", url)
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Periodic health check: token refresh, MQTT reconnect."""
+        """Periodic health check: token refresh, MQTT reconnect, device sync.
+
+        These steps are independent maintenance, not a pipeline, and are
+        written to stay that way: one failing must not cancel the ones after
+        it. Getting that wrong is issue #32 — the refresh ran first, an HTML
+        403 from the WAF in front of ocapi escaped as an aiohttp
+        ContentTypeError, and the reconnect below never ran again. A dead
+        socket plus a failing refresh left the integration permanently deaf,
+        one aborted tick every 30 minutes, until HA was restarted.
+        """
         # Token refresh
         if self.client.token_needs_refresh():
             _LOGGER.info("Refreshing auth token")
@@ -1408,34 +1520,26 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ) from err
             except (AuthenticationError, RateLimitedError) as err:
                 raise ConfigEntryAuthFailed(str(err)) from err
+            except Exception:
+                # Arlo never answered: a WAF block page, a timeout, a 5xx, a
+                # body in a shape we do not model. None of that is a verdict
+                # on the credentials, so it must not tear the entry down —
+                # and it must not stop the reconnect below, which is the step
+                # that decides whether a passing squall becomes an outage.
+                # The token we hold is still good for a while; retry next tick.
+                _LOGGER.warning(
+                    "Token refresh failed; keeping the current token and "
+                    "continuing the health check",
+                    exc_info=True,
+                )
+
+        # MQTT reconnect. Runs before the housekeeping below, not after: the
+        # event stream is the integration's only source of live state, so
+        # nothing else in this tick gets to stand in front of it.
+        await self._ensure_mqtt()
 
         # Prune old archived media on every health tick (cheap when empty).
         await self._prune_old_media()
-
-        # MQTT reconnect
-        if self._mqtt is None and self.client.mqtt_url:
-            _LOGGER.info("Reconnecting MQTT")
-            try:
-                x_cloud_ids = list(dict.fromkeys(d.x_cloud_id for d in self._devices))
-                if (
-                    self.client.user_id
-                    and self.client.token
-                    and self._http_session
-                    and x_cloud_ids
-                ):
-                    self._mqtt = MQTTEventStream(
-                        mqtt_url=self.client.mqtt_url,
-                        user_id=self.client.user_id,
-                        token=self.client.token,
-                        x_cloud_ids=x_cloud_ids,
-                        extra_topics=self._mqtt_extra_topics(),
-                        http_session=self._http_session,
-                    )
-                    self._register_mqtt_handlers()
-                    await self._mqtt.connect()
-            except Exception:
-                _LOGGER.exception("MQTT reconnect failed")
-                self._mqtt = None
 
         # Base-station event subscriptions expire, so renew them — a lapsed
         # one silently stops all device reporting (issue #27). Skipped when
@@ -1450,6 +1554,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_shutdown(self) -> None:
         """Clean shutdown."""
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reconnect_task
+            self._reconnect_task = None
         if self._mqtt:
             await self._mqtt.disconnect()
             self._mqtt = None

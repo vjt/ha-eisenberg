@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A failed token refresh no longer leaves the event stream dead forever (#32).**
+  The 30-minute health check ran the token refresh first and let anything that
+  was not an auth verdict propagate, so the MQTT reconnect further down never
+  ran. Arlo's WAF intermittently answers `ocapi-app.arlo.com/api/auth` with an
+  HTML 403, which surfaced as `aiohttp.ContentTypeError` and matched none of the
+  handled cases. With the socket down *and* the refresh failing, every tick
+  aborted at step one and the integration stayed deaf until Home Assistant was
+  restarted — natebrockert lost 42 hours of events to it. The health check's
+  steps are independent maintenance and now behave that way: a refusal that is
+  not a verdict on the credentials is logged, the current token is kept, and the
+  reconnect still runs.
+- **A dropped MQTT socket now reconnects in seconds, not at the next health tick.**
+  Reconnection backs off 5s → 15s → 1m → 3m → 5m before handing back to the
+  30-minute check, so an ordinary blip costs seconds of silence instead of half
+  an hour. A late-unwinding stream can no longer clear the handle to the one
+  that replaced it, and a failed connect at startup asks Home Assistant to retry
+  setup rather than leaving the entry up and deaf.
+- **Non-JSON replies from Arlo are named for what they are.** Both hosts sit
+  behind a WAF; a block page, gateway error or truncated body now raises
+  `TransientAPIError` carrying the endpoint, status, content type and a slice of
+  the body, instead of leaking aiohttp's decode error. It is deliberately not an
+  authentication error: a block page says nothing about the credentials, so it
+  must never tear down a working config entry.
+
 ## 0.4.1 — 2026-08-07
 
 ### Fixed

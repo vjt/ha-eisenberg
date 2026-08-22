@@ -42,6 +42,18 @@ class RateLimitedError(EisenbergError):
     """Arlo is rate-limiting requests. Back off and retry later."""
 
 
+class TransientAPIError(EisenbergError):
+    """Arlo's edge answered with something that is not an Arlo response.
+
+    A WAF block page, a gateway error, a truncated or proxy-mangled body:
+    the request never reached the API, so the answer carries no verdict
+    about credentials, session validity or device state. Deliberately NOT
+    under AuthenticationError — classifying an HTML 403 as an auth failure
+    is what turns a passing squall into a torn-down config entry (#32).
+    Callers should log it and retry on their next cycle.
+    """
+
+
 class APIError(EisenbergError):
     """Arlo API returned an error response."""
 

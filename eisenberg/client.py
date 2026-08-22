@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from types import TracebackType
 
-from aiohttp import ClientSession, CookieJar
+from aiohttp import ClientResponse, ClientSession, ContentTypeError, CookieJar
 
 from .exceptions import (
     APIError,
@@ -27,6 +27,7 @@ from .exceptions import (
     MfaRequired,
     RateLimitedError,
     SessionExpiredError,
+    TransientAPIError,
 )
 from .models import (
     ActiveModeState,
@@ -45,6 +46,38 @@ MYAPI_BASE = "https://myapi.arlo.com"
 # Arlo error codes that mean "your token is bad — log in again". Other codes
 # are operational (rate-limit, mode-conflict, etc.) and not auth-related.
 _INVALID_TOKEN_CODES: frozenset[str] = frozenset({"2015"})
+
+
+# How much of a non-JSON body to quote back. Enough to recognise a WAF block
+# page or a proxy error, short enough not to dump a whole HTML document into
+# the log.
+_BODY_SNIPPET = 200
+
+
+async def _read_arlo_json(resp: ClientResponse) -> Any:
+    """Decode an Arlo response body, or say plainly that it was not Arlo.
+
+    Both Arlo hosts sit behind a WAF that intermittently answers with an
+    HTML block page instead of JSON — natebrockert saw 403 text/html on
+    ocapi's /api/auth while the same credentials worked before and after
+    (#32). A bare `resp.json()` turns that into aiohttp.ContentTypeError,
+    which leaks the transport out of this layer and, worse, matches none of
+    the exceptions callers classify on, so it lands as an unhandled crash in
+    whatever loop made the call.
+
+    Parse at the boundary: anything that is not a decodable Arlo body
+    becomes TransientAPIError, naming the endpoint, the status, the
+    content type and a slice of what actually came back.
+    """
+    try:
+        return await resp.json()
+    except (ContentTypeError, ValueError) as err:
+        # The body is already buffered by the failed read, so this is free.
+        snippet = " ".join((await resp.text())[:_BODY_SNIPPET].split())
+        raise TransientAPIError(
+            f"{resp.method} {resp.url.path} returned {resp.status} "
+            f"{resp.content_type}, not JSON: {snippet!r}"
+        ) from err
 
 
 def _raise_for_arlo_error(body: dict[str, Any], op: str) -> None:
@@ -266,7 +299,7 @@ class EisenbergClient:
                 "EnvSource": "prod",
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if body["meta"].get("message") == "Too many requests":
             raise RateLimitedError(
@@ -295,7 +328,7 @@ class EisenbergClient:
                 "userId": self.user_id,
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         _LOGGER.debug("getFactorId response: code=%s", body["meta"]["code"])
         if body["meta"]["code"] == 200:
@@ -310,7 +343,7 @@ class EisenbergClient:
                     "userId": self.user_id,
                 },
             ) as resp:
-                body = await resp.json()
+                body = await _read_arlo_json(resp)
 
             if body["meta"]["code"] != 200:
                 raise AuthenticationError(f"Trusted startAuth failed: {body['meta'].get('error')}")
@@ -337,7 +370,7 @@ class EisenbergClient:
             f"{OCAPI_BASE}/api/getFactors?data={int(time.time())}",
             headers=self._ocapi_headers(token),
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if body["meta"].get("message") == "Too many requests":
             raise RateLimitedError(
@@ -382,7 +415,7 @@ class EisenbergClient:
                 "userId": self.user_id,
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if body["meta"].get("message") == "Too many requests":
             raise RateLimitedError(
@@ -421,7 +454,7 @@ class EisenbergClient:
             headers=self._ocapi_headers(self.token),
             json=payload,
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         meta = body["meta"]
         msg = meta.get("message", "")
@@ -460,7 +493,7 @@ class EisenbergClient:
                 "factorAuthCode": browser_auth_code,
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if body["meta"]["code"] != 200:
             _LOGGER.warning("Failed to pair browser: %s", body)
@@ -474,7 +507,7 @@ class EisenbergClient:
             f"{MYAPI_BASE}/hmsweb/users/session/v3",
             headers=self._myapi_headers(self.token),
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "establish_session")
@@ -503,7 +536,7 @@ class EisenbergClient:
             f"{MYAPI_BASE}/hmsweb/v2/users/devices",
             headers=self._myapi_headers(self.token),
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "get_devices")
@@ -550,7 +583,7 @@ class EisenbergClient:
                 "transId": f"web!snapshot!{int(time.time())}",
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "request_snapshot")
@@ -576,7 +609,7 @@ class EisenbergClient:
                 },
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "start_stream")
@@ -616,7 +649,7 @@ class EisenbergClient:
             f"{MYAPI_BASE}/hmsdevicemanagement/users/{self.user_id}/locations",
             headers=self._myapi_headers(self.token),
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         _LOGGER.debug("get_locations response: %s", body)
 
@@ -649,7 +682,7 @@ class EisenbergClient:
             headers=self._v3_mode_headers(self.token),
             params={"locationId": location_id},
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         _LOGGER.debug("get_active_mode response: %s", body)
 
@@ -675,7 +708,7 @@ class EisenbergClient:
             params={"locationId": location_id, "revision": str(revision)},
             json={"mode": mode},
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         _LOGGER.debug("set_active_mode response: %s", body)
 
@@ -728,7 +761,7 @@ class EisenbergClient:
                 "properties": {"spotlight": spotlight},
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "set_spotlight")
@@ -765,7 +798,7 @@ class EisenbergClient:
                 "properties": {"devices": [base_id]},
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "register_event_subscription")
@@ -798,7 +831,7 @@ class EisenbergClient:
                 "transId": f"web!states!{int(time.time())}",
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "request_device_states")
@@ -831,7 +864,7 @@ class EisenbergClient:
                 "properties": properties,
             },
         ) as resp:
-            body = await resp.json()
+            body = await _read_arlo_json(resp)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "set_siren")

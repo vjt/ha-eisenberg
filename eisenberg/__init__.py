@@ -9,6 +9,7 @@ from .exceptions import (
     MQTTConnectionError,
     RateLimitedError,
     SessionExpiredError,
+    TransientAPIError,
 )
 from .models import (
     ActiveMode,
@@ -54,4 +55,5 @@ __all__ = [
     "SnapshotAvailable",
     "SpotlightState",
     "StreamResponse",
+    "TransientAPIError",
 ]
