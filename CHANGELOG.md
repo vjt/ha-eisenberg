@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **Home Assistant no longer wakes every camera each time it starts.** When a
+  camera entity is added, HA calls `stream_source()` from
+  `async_refresh_providers()` purely to read the URL's scheme and decide whether
+  go2rtc can serve the camera. Answering that for real asked Arlo to start a
+  live stream: the LED came on, the camera streamed for ~30s with nobody
+  watching, and a clip landed in the Arlo library — on every restart, every
+  reload and every options change, once per camera. The probe is now answered
+  from the scheme alone, with Arlo untouched; a real viewer still gets a real
+  stream.
+- **Opening live view no longer asks Arlo for two streams at once.** The
+  frontend starts the WebRTC offer and the HLS fallback within milliseconds of
+  each other, so both reached `startStream`. Arlo refuses the second with 4006
+  ("Invalid camera activity state change"), which killed whichever path drew
+  it — usually WebRTC, leaving live view on the slower fallback. The call is now
+  serialised per camera and its URL is reused for 10s, so the pair shares one
+  stream.
+- **A failed live view no longer breaks every later one until a restart.**
+  Arlo's egress URL dies with the stream, but HA keeps the `Stream` object and
+  the source it was built with, handing the same one to every later viewer —
+  whose worker then retried a dead URL on a growing backoff while the player sat
+  at 0:00 forever. The Stream is now stopped and dropped once Arlo ends the
+  session, after the final keyframe is saved for the dashboard tile, so the next
+  viewer gets a Stream built around a fresh URL.
+
 ## 0.4.2 — 2026-08-22
 
 ### Fixed

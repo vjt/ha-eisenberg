@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import ClassVar
+from time import monotonic
+from typing import Any, ClassVar
 
 import aiohttp
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -48,6 +50,8 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
     _attr_supported_features = CameraEntityFeature.STREAM
     _attr_is_streaming: bool = False
     _attr_motion_detection_enabled: bool = True
+    _probing: bool = False
+    _last_url: tuple[float, str] | None = None
     # Arlo's stream is RTSP-over-TLS on port 443; ffmpeg's default UDP
     # transport can't traverse TLS so it reads garbage and fails with
     # "Invalid data found when processing input". Force TCP. The other
@@ -71,6 +75,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         Camera.__init__(self)
 
         self._device = device
+        self._stream_lock = asyncio.Lock()
         self._attr_unique_id = f"{device.device_id}_camera"
         self._attr_device_info = {
             "identifiers": {("eisenberg", device.device_id)},
@@ -152,20 +157,60 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         native already worked — hence opt-in, not blanket. Only honoured when
         go2rtc is actually loaded; otherwise the legacy PyAV path needs a bare
         URL it can open.
+
+        Two callers ask for a source that nobody is going to watch, and both
+        used to wake the camera: the provider probe (see
+        ``async_refresh_providers``) and the second of the pair of requests
+        the frontend fires when live view opens. Both are answered without
+        touching Arlo.
         """
-        try:
-            resp = await self.coordinator.call_with_session_retry(
-                "start_stream",
-                lambda: self.coordinator.client.start_stream(self._device.device_id),
-            )
-        except Exception:
-            _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
-            return None
-        url = resp.url.replace("rtsp://", "rtsps://", 1)
+        if self._probing:
+            # Scheme-only answer for the probe — HA compares the prefix
+            # against go2rtc's supported list and throws the URL away.
+            return self._with_transport("rtsps://probe.invalid/")
+
+        async with self._stream_lock:
+            # Opening live view asks twice within milliseconds: the WebRTC
+            # offer, then the HLS fallback. Arlo rejects the second
+            # start_stream with 4006 ("Invalid camera activity state
+            # change"), so hand out the URL the first one just got.
+            # ponytail: 10 s window, per-entity. Long enough for the pair,
+            # short enough that a real retry gets a fresh egress token.
+            if self._last_url and monotonic() - self._last_url[0] < 10:
+                return self._last_url[1]
+            try:
+                resp = await self.coordinator.call_with_session_retry(
+                    "start_stream",
+                    lambda: self.coordinator.client.start_stream(self._device.device_id),
+                )
+            except Exception:
+                _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
+                return None
+            url = self._with_transport(resp.url.replace("rtsp://", "rtsps://", 1))
+            self._last_url = (monotonic(), url)
+            return url
+
+    def _with_transport(self, url: str) -> str:
+        """Apply the ``ffmpeg_stream`` option to a bare rtsps URL."""
         use_ffmpeg = self.coordinator.entry.options.get(CONF_FFMPEG_STREAM, DEFAULT_FFMPEG_STREAM)
         if use_ffmpeg and "go2rtc" in self.hass.config.components:
             return f"ffmpeg:{url}"
         return url
+
+    async def async_refresh_providers(self, *args: Any, **kwargs: Any) -> None:
+        """Answer the WebRTC-provider probe without waking the camera.
+
+        HA calls ``stream_source()`` here purely to read the URL scheme and
+        decide whether go2rtc can handle this camera — at every entity add,
+        so on every restart, reload and options change. Served for real it
+        asks Arlo to start a user stream: the camera lights its LED and
+        uploads a ~30 s clip nobody ever watches, three times per restart.
+        """
+        self._probing = True
+        try:
+            await super().async_refresh_providers(*args, **kwargs)
+        finally:
+            self._probing = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -192,21 +237,30 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         self.async_write_ha_state()
 
     async def _cache_last_stream_frame(self) -> None:
-        # Don't tear down the Stream — HA reuses it for follow-up clients
-        # (more frame requests, websocket HLS endpoint negotiation), and
-        # forcing self.stream = None would race with those. The trade-off
-        # is the occasional "Invalid data" log when HA's keepalive retries
-        # with an expired Arlo egress token; that's noise, not a fault.
-        if self.stream is None:
+        """Keep the last frame, then drop the Stream Arlo has just killed.
+
+        Arlo's egress URL dies with the stream, and HA's Stream object keeps
+        the source it was built with: ``async_create_stream`` hands the old
+        object back to every later viewer, whose worker then retries the dead
+        URL on an ever-growing backoff. One failed live view used to poison
+        every later one until a restart. Grab the final keyframe for the
+        dashboard tile first, then tear it down so the next viewer builds a
+        Stream around a fresh URL.
+        """
+        stream = self.stream
+        if stream is None:
             return
         try:
-            frame = await self.stream.async_get_image()
+            frame = await stream.async_get_image()
         except Exception:
             _LOGGER.debug("Failed to capture last stream frame", exc_info=True)
-            return
+            frame = None
         if frame:
             self.coordinator.image_bytes[self._device.device_id] = frame
             _LOGGER.debug(
                 "Cached %d bytes from stream end for %s", len(frame), self._device.device_id
             )
             await self.coordinator.archive_bytes(self._device.device_id, frame, "stream_thumb")
+        if self.stream is stream:
+            self.stream = None
+            await stream.stop()
