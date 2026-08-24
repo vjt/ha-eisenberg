@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from time import monotonic
 from typing import Any, ClassVar
 
 import aiohttp
 from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.stream import Stream
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_platform
@@ -21,6 +23,13 @@ from .const import CONF_FFMPEG_STREAM, DEFAULT_FFMPEG_STREAM
 from .coordinator import EisenbergCoordinator
 
 SERVICE_SNAPSHOT = "snapshot"
+
+# Set while HA's own stream component is building a Stream. The ``ffmpeg:``
+# prefix is go2rtc source syntax; the PyAV worker behind HLS opens the URL
+# itself and cannot parse it. A ContextVar and not an attribute because the
+# frontend opens both players at once — the go2rtc offer runs in its own task
+# and must keep seeing the prefixed source.
+_BARE_SOURCE: ContextVar[bool] = ContextVar("eisenberg_bare_source", default=False)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -177,7 +186,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             # ponytail: 10 s window, per-entity. Long enough for the pair,
             # short enough that a real retry gets a fresh egress token.
             if self._last_url and monotonic() - self._last_url[0] < 10:
-                return self._last_url[1]
+                return self._with_transport(self._last_url[1])
             try:
                 resp = await self.coordinator.call_with_session_retry(
                     "start_stream",
@@ -186,16 +195,33 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             except Exception:
                 _LOGGER.exception("Failed to start stream for %s", self._device.device_id)
                 return None
-            url = self._with_transport(resp.url.replace("rtsp://", "rtsps://", 1))
+            url = resp.url.replace("rtsp://", "rtsps://", 1)
             self._last_url = (monotonic(), url)
-            return url
+            return self._with_transport(url)
 
     def _with_transport(self, url: str) -> str:
         """Apply the ``ffmpeg_stream`` option to a bare rtsps URL."""
+        if _BARE_SOURCE.get():
+            return url
         use_ffmpeg = self.coordinator.entry.options.get(CONF_FFMPEG_STREAM, DEFAULT_FFMPEG_STREAM)
         if use_ffmpeg and "go2rtc" in self.hass.config.components:
             return f"ffmpeg:{url}"
         return url
+
+    async def async_create_stream(self) -> Stream | None:
+        """Build HA's own Stream around the bare URL.
+
+        This is the HLS path, and its worker is PyAV opening the URL directly —
+        ``ffmpeg:`` means nothing to it, so a install that opted into the ffmpeg
+        source for go2rtc used to have no working fallback: the player sat at
+        0:00 while the worker retried a URL it could never parse. go2rtc still
+        gets the prefixed source; only this caller is served the bare one.
+        """
+        token = _BARE_SOURCE.set(True)
+        try:
+            return await super().async_create_stream()
+        finally:
+            _BARE_SOURCE.reset(token)
 
     async def async_refresh_providers(self, *args: Any, **kwargs: Any) -> None:
         """Answer the WebRTC-provider probe without waking the camera.

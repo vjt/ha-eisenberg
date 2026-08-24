@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session, after the final keyframe is saved for the dashboard tile, so the next
   viewer gets a Stream built around a fresh URL.
 
+- **The `ffmpeg_stream` option no longer costs you the HLS fallback.** The
+  `ffmpeg:` prefix is go2rtc source syntax, but `stream_source()` handed it to
+  every caller — including Home Assistant's own stream component, whose PyAV
+  worker opens the URL itself and cannot parse it. An install that turned the
+  option on to get a working go2rtc view was left with a dead fallback: the
+  player sat at 0:00 while the worker retried a URL it could never read. The
+  prefix is now applied per caller, so go2rtc gets the ffmpeg source and the
+  HLS path gets the bare one. On a box where go2rtc's native RTSP client
+  refuses Arlo ("RTSP wrong input"), that combination is the difference between
+  a live view that errors and one that plays.
+
 ## 0.4.2 — 2026-08-22
 
 ### Fixed

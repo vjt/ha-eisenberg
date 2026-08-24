@@ -216,3 +216,38 @@ async def test_stream_is_dropped_when_arlo_ends_the_session() -> None:
     assert archived == [(DEVICE_ID, b"jpeg", "stream_thumb")]
     assert stopped == [True]
     assert camera.stream is None
+
+
+@pytest.mark.asyncio
+async def test_pyav_gets_a_bare_url_while_go2rtc_keeps_the_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ffmpeg:`` is go2rtc source syntax. HA's own stream worker is PyAV
+    opening the URL itself, so it must be handed the bare one — otherwise
+    opting into the ffmpeg source leaves the HLS player with nothing it can
+    parse and no working fallback. The frontend opens both players at once, so
+    a go2rtc caller running concurrently must still see the prefix."""
+    started: list[str] = []
+    camera = _camera(
+        {"camera", "go2rtc", "stream"},
+        options={"ffmpeg_stream": True},
+        started=started,
+        delay=0.05,
+    )
+
+    async def fake_super_create_stream(_self: object) -> str | None:
+        # Stand in for HA's Stream construction, which asks the entity for a
+        # source and hands it to the PyAV worker.
+        return await camera.stream_source()
+
+    monkeypatch.setattr(Camera, "async_create_stream", fake_super_create_stream)
+
+    for_pyav, for_go2rtc = await asyncio.gather(
+        camera.async_create_stream(),
+        camera.stream_source(),
+    )
+
+    # One Arlo stream, two consumers, each told how to open it.
+    assert started == [DEVICE_ID]
+    assert for_pyav == RTSPS_URL
+    assert for_go2rtc == f"ffmpeg:{RTSPS_URL}"
