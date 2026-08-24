@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 import pytest
 from homeassistant.components.camera import Camera
 
-from custom_components.eisenberg.camera import EisenbergCamera
+from custom_components.eisenberg.camera import _PROBING, EisenbergCamera
 from eisenberg import DeviceInfo
 
 if TYPE_CHECKING:
@@ -164,8 +164,11 @@ async def test_probe_answer_carries_the_ffmpeg_prefix() -> None:
     same prefix the real source would — otherwise opting into ffmpeg silently
     changes which player HA offers."""
     camera = _camera({"camera", "go2rtc", "stream"}, options={"ffmpeg_stream": True})
-    camera._probing = True
-    source = await camera.stream_source()
+    token = _PROBING.set(True)
+    try:
+        source = await camera.stream_source()
+    finally:
+        _PROBING.reset(token)
     assert source is not None
     assert source.startswith("ffmpeg:rtsps://")
 
@@ -251,3 +254,73 @@ async def test_pyav_gets_a_bare_url_while_go2rtc_keeps_the_prefix(
     assert started == [DEVICE_ID]
     assert for_pyav == RTSPS_URL
     assert for_go2rtc == f"ffmpeg:{RTSPS_URL}"
+
+
+@pytest.mark.asyncio
+async def test_probe_does_not_hand_its_fake_url_to_a_real_viewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe answer is a placeholder, and it must not escape its own caller.
+
+    ``async_refresh_providers`` holds the probe flag across an await — HA's
+    implementation reaches out to go2rtc for its supported schemes — and the
+    frontend can open live view inside that window. Instance state would hand
+    ``probe.invalid`` to that viewer, who then builds a Stream around a URL
+    that resolves to nothing. The flag is per-task for the same reason the
+    bare-source flag is.
+    """
+    started: list[str] = []
+    camera = _camera({"camera", "go2rtc", "stream"}, started=started)
+
+    probe_running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_super_refresh(*_args: object, **_kwargs: object) -> None:
+        probe_running.set()
+        await release.wait()
+        await camera.stream_source()
+
+    monkeypatch.setattr(Camera, "async_refresh_providers", fake_super_refresh)
+
+    probe = asyncio.create_task(camera.async_refresh_providers())
+    await probe_running.wait()
+    # A real viewer arrives while the probe is still in flight.
+    viewer_url = await camera.stream_source()
+    release.set()
+    await probe
+
+    assert viewer_url == RTSPS_URL
+    assert started == [DEVICE_ID], "the viewer, and only the viewer, woke the camera"
+
+
+@pytest.mark.asyncio
+async def test_url_cache_is_dropped_when_arlo_ends_the_session() -> None:
+    """The 10 s reuse window must not outlive the stream it was cached from.
+
+    Dropping the dead Stream is only half the fix: a viewer arriving inside
+    the window would be handed the same retired egress URL from the cache and
+    build a fresh Stream around it, which is the bug this was meant to end.
+    """
+    started: list[str] = []
+    camera = _camera({"camera", "go2rtc", "stream"}, started=started)
+    camera.coordinator.image_bytes = {}  # type: ignore[attr-defined]
+
+    async def archive_bytes(device_id: str, content: bytes, media_type: str) -> None:
+        return None
+
+    camera.coordinator.archive_bytes = archive_bytes  # type: ignore[attr-defined]
+
+    class _Stream:
+        async def async_get_image(self) -> bytes:
+            return b"jpeg"
+
+        async def stop(self) -> None:
+            return None
+
+    assert await camera.stream_source() == RTSPS_URL
+    camera.stream = _Stream()  # type: ignore[assignment]
+    await camera._cache_last_stream_frame()
+
+    # Immediately afterwards — well inside the 10 s window.
+    assert await camera.stream_source() == RTSPS_URL
+    assert started == [DEVICE_ID, DEVICE_ID], "the second viewer must get a fresh URL"

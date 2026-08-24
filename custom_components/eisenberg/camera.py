@@ -31,6 +31,19 @@ SERVICE_SNAPSHOT = "snapshot"
 # and must keep seeing the prefixed source.
 _BARE_SOURCE: ContextVar[bool] = ContextVar("eisenberg_bare_source", default=False)
 
+# Set while HA is probing this entity for a WebRTC provider and wants nothing
+# from the source but its scheme. A ContextVar for the same reason as above,
+# and a stronger one: the probe holds the flag across an await (HA asks go2rtc
+# for its supported schemes), and a viewer opening live view inside that window
+# would otherwise be handed the placeholder URL below and build a Stream around
+# a host that does not resolve.
+_PROBING: ContextVar[bool] = ContextVar("eisenberg_probing", default=False)
+
+# Handed to the provider probe in place of a real egress URL. Only its scheme
+# is ever read; the host is deliberately unroutable so a leak fails loudly
+# rather than quietly streaming from somewhere unexpected.
+_PROBE_URL = "rtsps://probe.invalid/"
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -59,7 +72,6 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
     _attr_supported_features = CameraEntityFeature.STREAM
     _attr_is_streaming: bool = False
     _attr_motion_detection_enabled: bool = True
-    _probing: bool = False
     _last_url: tuple[float, str] | None = None
     # Arlo's stream is RTSP-over-TLS on port 443; ffmpeg's default UDP
     # transport can't traverse TLS so it reads garbage and fails with
@@ -157,7 +169,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         process, HEVC passthrough, no ffmpeg, no transcode, smooth. That is the
         right path and must stay the default.
 
-        The ``ffmpeg_stream`` option opts a install into routing the source
+        The ``ffmpeg_stream`` option opts an install into routing the source
         through ffmpeg (``ffmpeg:rtsps://…``) instead. It exists only for boxes
         where go2rtc's native RTSP client can't read Arlo's stream at all —
         black live view, "RTSP wrong input" / "RTP header size insufficient:
@@ -173,18 +185,20 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         the frontend fires when live view opens. Both are answered without
         touching Arlo.
         """
-        if self._probing:
+        if _PROBING.get():
             # Scheme-only answer for the probe — HA compares the prefix
             # against go2rtc's supported list and throws the URL away.
-            return self._with_transport("rtsps://probe.invalid/")
+            return self._with_transport(_PROBE_URL)
 
         async with self._stream_lock:
             # Opening live view asks twice within milliseconds: the WebRTC
             # offer, then the HLS fallback. Arlo rejects the second
             # start_stream with 4006 ("Invalid camera activity state
             # change"), so hand out the URL the first one just got.
-            # ponytail: 10 s window, per-entity. Long enough for the pair,
-            # short enough that a real retry gets a fresh egress token.
+            # A 10 s window, per entity: long enough for the pair, short
+            # enough that a real retry gets a fresh egress token. Cleared
+            # outright when Arlo ends the session, because the URL dies with
+            # it and the remainder of the window would hand out a corpse.
             if self._last_url and monotonic() - self._last_url[0] < 10:
                 return self._with_transport(self._last_url[1])
             try:
@@ -212,7 +226,7 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         """Build HA's own Stream around the bare URL.
 
         This is the HLS path, and its worker is PyAV opening the URL directly —
-        ``ffmpeg:`` means nothing to it, so a install that opted into the ffmpeg
+        ``ffmpeg:`` means nothing to it, so an install that opted into the ffmpeg
         source for go2rtc used to have no working fallback: the player sat at
         0:00 while the worker retried a URL it could never parse. go2rtc still
         gets the prefixed source; only this caller is served the bare one.
@@ -232,11 +246,11 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         asks Arlo to start a user stream: the camera lights its LED and
         uploads a ~30 s clip nobody ever watches, three times per restart.
         """
-        self._probing = True
+        token = _PROBING.set(True)
         try:
             await super().async_refresh_providers(*args, **kwargs)
         finally:
-            self._probing = False
+            _PROBING.reset(token)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -289,4 +303,9 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             await self.coordinator.archive_bytes(self._device.device_id, frame, "stream_thumb")
         if self.stream is stream:
             self.stream = None
+            # The cached URL was minted for the session Arlo has just ended.
+            # Leaving it would let a viewer arriving inside the reuse window
+            # build a brand-new Stream around the same dead egress token —
+            # the very failure dropping the Stream exists to prevent.
+            self._last_url = None
             await stream.stop()

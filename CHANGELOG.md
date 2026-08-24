@@ -32,7 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at 0:00 forever. The Stream is now stopped and dropped once Arlo ends the
   session, after the final keyframe is saved for the dashboard tile, so the next
   viewer gets a Stream built around a fresh URL.
-
 - **The `ffmpeg_stream` option no longer costs you the HLS fallback.** The
   `ffmpeg:` prefix is go2rtc source syntax, but `stream_source()` handed it to
   every caller — including Home Assistant's own stream component, whose PyAV
@@ -43,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HLS path gets the bare one. On a box where go2rtc's native RTSP client
   refuses Arlo ("RTSP wrong input"), that combination is the difference between
   a live view that errors and one that plays.
+- **The provider probe can no longer hand its placeholder URL to a real
+  viewer.** The probe holds its flag across an await — Home Assistant asks
+  go2rtc for its supported schemes — and live view opened inside that window
+  was served the placeholder instead of a stream, building a player around a
+  host that does not resolve. The flag is now per-task, like the one deciding
+  the `ffmpeg:` prefix.
+- **The reused stream URL is dropped when Arlo ends the session.** The 10s
+  reuse window outlived the stream it was cached from, so a viewer arriving
+  just after a session ended was handed the retired egress URL and built a
+  fresh player around it — the same dead-URL failure that dropping the Stream
+  removes.
 
 ## 0.4.2 — 2026-08-22
 
