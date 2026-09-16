@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A live view that fails no longer breaks every later one until a restart.**
+  0.4.3 dropped the dead `Stream` when Arlo ended a session, but that hinged on
+  a streaming-to-idle transition, and a stream that never starts never sends
+  one — so the `Stream` built around the failed URL survived and Home Assistant
+  handed that same object, source and all, to every later viewer. The fix
+  closed the common case and left the failure case wearing it. A `Stream` is
+  now refused at the one door every viewer comes through, `async_create_stream`,
+  whenever it belongs to a session that is over: Arlo no longer reports the
+  stream running, and the egress URL it was built around is older than the
+  reuse window. A live view in progress is never torn down, and the pair of
+  requests the frontend fires when live view opens still share one stream.
+
 ## 0.4.4 — 2026-09-16
 
 ### Fixed

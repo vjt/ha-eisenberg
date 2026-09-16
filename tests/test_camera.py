@@ -18,6 +18,7 @@ the config-entry options, and hass.config.components.
 from __future__ import annotations
 
 import asyncio
+from time import monotonic
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -90,9 +91,11 @@ def _camera(
     camera.coordinator = coordinator  # type: ignore[attr-defined]
     camera._device = _device(DEVICE_ID)
     camera.hass = SimpleNamespace(config=SimpleNamespace(components=components))  # type: ignore[attr-defined]
-    # __init__ is bypassed above; the per-entity lock is the one piece of
-    # instance state stream_source needs that has no sane class default.
+    # __init__ is bypassed above, so the instance state HA's own Camera.__init__
+    # would have set has to be supplied here: the per-entity lock, and `stream`,
+    # which Camera.__init__ initialises to None (camera/__init__.py:451).
     camera._stream_lock = asyncio.Lock()
+    camera.stream = None  # type: ignore[assignment]
     return camera
 
 
@@ -412,3 +415,83 @@ async def test_live_stream_still_wins_and_refreshes_the_cache() -> None:
 
     assert await camera.async_camera_image() == b"live-keyframe"
     assert camera.coordinator.image_bytes[DEVICE_ID] == b"live-keyframe"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_live_view_does_not_poison_the_next_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live view that never starts leaves a Stream nothing will ever clear.
+
+    0.4.3 drops the dead Stream on the streaming-to-idle transition, but that
+    transition needs ``userStreamActive`` to have arrived first. When the
+    stream never starts it never does, so the Stream built around that failed
+    URL survives and ``async_create_stream`` hands the same one to every later
+    viewer — forever, until a restart. Once the reuse window has lapsed with
+    the camera not streaming, the Stream belongs to a session that is over and
+    must not be handed on.
+    """
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera._attr_is_streaming = False
+    dead = _FakeStream()
+    camera.stream = dead  # type: ignore[assignment]
+    # The URL it was built from was minted longer ago than the reuse window.
+    camera._last_url = (monotonic() - 3600, ARLO_URL)
+
+    built: list[str | None] = []
+
+    async def fake_super_create_stream(_self: object) -> object | None:
+        built.append(await camera.stream_source())
+        camera.stream = _FakeStream(b"new")  # type: ignore[assignment]
+        return camera.stream
+
+    monkeypatch.setattr(Camera, "async_create_stream", fake_super_create_stream)
+
+    result = await camera.async_create_stream()
+
+    assert dead.stopped, "the dead Stream must be stopped, not merely dropped"
+    assert result is not dead
+    assert built == [RTSPS_URL], "the replacement is built around a fresh URL"
+
+
+@pytest.mark.asyncio
+async def test_the_paired_frontend_requests_still_share_one_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must not undo #33: within the reuse window the Stream the
+    first caller just built is still the live one, even though Arlo has not
+    reported ``userStreamActive`` yet."""
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera._attr_is_streaming = False
+    fresh = _FakeStream()
+    camera.stream = fresh  # type: ignore[assignment]
+    camera._last_url = (monotonic(), ARLO_URL)
+
+    async def fake_super_create_stream(_self: object) -> object | None:
+        return camera.stream
+
+    monkeypatch.setattr(Camera, "async_create_stream", fake_super_create_stream)
+
+    assert await camera.async_create_stream() is fresh
+    assert not fresh.stopped
+
+
+@pytest.mark.asyncio
+async def test_a_running_stream_is_never_torn_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long live view outlives the reuse window; while Arlo says the stream
+    is running it is the live one whatever the cache says."""
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera._attr_is_streaming = True
+    live = _FakeStream()
+    camera.stream = live  # type: ignore[assignment]
+    camera._last_url = (monotonic() - 3600, ARLO_URL)
+
+    async def fake_super_create_stream(_self: object) -> object | None:
+        return camera.stream
+
+    monkeypatch.setattr(Camera, "async_create_stream", fake_super_create_stream)
+
+    assert await camera.async_create_stream() is live
+    assert not live.stopped

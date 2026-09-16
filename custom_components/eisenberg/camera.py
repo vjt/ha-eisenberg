@@ -44,6 +44,13 @@ _PROBING: ContextVar[bool] = ContextVar("eisenberg_probing", default=False)
 # rather than quietly streaming from somewhere unexpected.
 _PROBE_URL = "rtsps://probe.invalid/"
 
+# How long a freshly minted Arlo egress URL is handed out again instead of
+# asking for another. Long enough for the pair of requests the frontend fires
+# when live view opens (Arlo refuses the second startStream with 4006), short
+# enough that a real retry gets a fresh token. It doubles as the grace period
+# below: inside it, a Stream is assumed to belong to the session being opened.
+STREAM_URL_REUSE_SECONDS = 10.0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -215,11 +222,10 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             # offer, then the HLS fallback. Arlo rejects the second
             # start_stream with 4006 ("Invalid camera activity state
             # change"), so hand out the URL the first one just got.
-            # A 10 s window, per entity: long enough for the pair, short
-            # enough that a real retry gets a fresh egress token. Cleared
-            # outright when Arlo ends the session, because the URL dies with
-            # it and the remainder of the window would hand out a corpse.
-            if self._last_url and monotonic() - self._last_url[0] < 10:
+            # See STREAM_URL_REUSE_SECONDS. Cleared outright when Arlo ends
+            # the session, because the URL dies with it and the remainder of
+            # the window would hand out a corpse.
+            if self._last_url and monotonic() - self._last_url[0] < STREAM_URL_REUSE_SECONDS:
                 return self._with_transport(self._last_url[1])
             try:
                 resp = await self.coordinator.call_with_session_retry(
@@ -242,6 +248,32 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             return f"ffmpeg:{url}"
         return url
 
+    def _stream_session_is_over(self) -> bool:
+        """True when ``self.stream`` belongs to a session that has ended.
+
+        An Arlo Stream is only ever valid for the session whose egress URL it
+        was built around — unlike an ordinary RTSP camera, whose source is
+        stable forever and which is the assumption HA's caching of
+        ``self.stream`` is built on. Two signals, and both are needed:
+
+        ``_attr_is_streaming`` says Arlo currently reports the stream running,
+        which is authoritative while it is true and is what keeps a long live
+        view from being torn down mid-watch.
+
+        The reuse window says a URL was minted moments ago, so a Stream built
+        around it belongs to the session being opened right now — Arlo has
+        simply not published ``userStreamActive`` yet. Without this the pair of
+        requests the frontend fires would see the first one's Stream as
+        finished and rebuild it, undoing #33 one layer down.
+
+        Neither holding means the Stream outlived its URL.
+        """
+        if self.stream is None or self._attr_is_streaming:
+            return False
+        if self._last_url is None:
+            return True
+        return monotonic() - self._last_url[0] >= STREAM_URL_REUSE_SECONDS
+
     async def async_create_stream(self) -> Stream | None:
         """Build HA's own Stream around the bare URL.
 
@@ -250,7 +282,26 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         source for go2rtc used to have no working fallback: the player sat at
         0:00 while the worker retried a URL it could never parse. go2rtc still
         gets the prefixed source; only this caller is served the bare one.
+
+        It is also the one door every viewer comes through, which makes it the
+        place to refuse a Stream that has outlived its URL. 0.4.3 dropped the
+        dead one on the streaming-to-idle transition, but that needs
+        ``userStreamActive`` to have arrived first — and a live view that never
+        starts never sends it, so the Stream built around the failed URL
+        survived and HA handed that same object to every later viewer until a
+        restart. One failed live view still broke every later one; only the
+        symptom had moved.
         """
+        if self._stream_session_is_over():
+            finished = self.stream
+            self.stream = None
+            if finished is not None:
+                _LOGGER.debug(
+                    "Dropping the Stream of a finished session for %s",
+                    self._device.device_id,
+                )
+                await finished.stop()
+
         token = _BARE_SOURCE.set(True)
         try:
             return await super().async_create_stream()
