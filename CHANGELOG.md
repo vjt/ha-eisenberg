@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A finished live view no longer freezes the camera tile on its last keyframe
+  (#34).** `async_camera_image` preferred a keyframe from HA's stream worker
+  whenever a `Stream` object existed — but one is built on the first live view
+  and outlives the session, so "a stream exists" was never evidence that it was
+  producing frames. Long after the session ended the tile kept serving whatever
+  the converter had decoded last: a daylight frame at 20:01 while the
+  neighbouring cameras were on night infrared, one of them 69 minutes old, with
+  a newer snapshot already in the archive. The stale keyframe was then written
+  over the fresher bytes in the coordinator's cache, so the snapshot was lost to
+  every later reader too. The keyframe is now used only while Arlo reports the
+  stream actually running; the final frame of a session still reaches the tile,
+  via the path that already saves it on the streaming-to-idle transition.
+- **Refreshing the tile no longer reopens a retired stream URL.**
+  `Stream.async_get_image` calls `await self.start()`, which respawns the worker
+  thread against the source the Stream was built with. Consulting a finished
+  stream therefore reopened an Arlo egress URL that had died with its session —
+  on every tile poll, once per camera — producing exactly the camera wake-ups
+  and restart-backoff loops 0.4.3 was released to stop. Nothing calls into a
+  stream that is not running any more.
+
 ## 0.4.3 — 2026-08-24
 
 ### Fixed

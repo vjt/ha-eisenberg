@@ -324,3 +324,91 @@ async def test_url_cache_is_dropped_when_arlo_ends_the_session() -> None:
     # Immediately afterwards — well inside the 10 s window.
     assert await camera.stream_source() == RTSPS_URL
     assert started == [DEVICE_ID, DEVICE_ID], "the second viewer must get a fresh URL"
+
+
+class _FakeStream:
+    """A Stream that behaves like HA's: ``async_get_image`` starts the worker.
+
+    That detail is the whole of #34. ``Stream.async_get_image`` does
+    ``self.add_provider(HLS_PROVIDER)`` then ``await self.start()``, and
+    ``start()`` spawns the worker thread whenever one is not alive — against
+    whatever source the Stream was built with. On a stopped stream that is a
+    retired Arlo egress URL, and the keyframe handed back is whatever the
+    converter decoded last, however long ago.
+    """
+
+    def __init__(self, frame: bytes = b"old-keyframe") -> None:
+        self.frame = frame
+        self.starts = 0
+        self.stopped = False
+
+    async def async_get_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        self.starts += 1
+        return self.frame
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+@pytest.mark.asyncio
+async def test_idle_stream_does_not_beat_a_fresher_snapshot() -> None:
+    """#34: a keyframe from a finished session must not outrank a new snapshot.
+
+    peteramelang's yard camera served a DAYLIGHT frame at 20:01 while its
+    neighbours were on night infrared, with a newer snapshot already sitting
+    in the archive. A Stream object existing is not evidence that it is
+    producing frames.
+    """
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera.coordinator.image_bytes = {DEVICE_ID: b"fresh-snapshot"}  # type: ignore[attr-defined]
+    camera.stream = _FakeStream(b"old-keyframe")  # type: ignore[assignment]
+    camera._attr_is_streaming = False
+
+    assert await camera.async_camera_image() == b"fresh-snapshot"
+
+
+@pytest.mark.asyncio
+async def test_idle_stream_does_not_overwrite_the_cached_snapshot() -> None:
+    """The stale keyframe was also written over the fresh bytes, so the
+    snapshot was not merely ignored — it was destroyed, for every later
+    reader too."""
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera.coordinator.image_bytes = {DEVICE_ID: b"fresh-snapshot"}  # type: ignore[attr-defined]
+    camera.stream = _FakeStream(b"old-keyframe")  # type: ignore[assignment]
+    camera._attr_is_streaming = False
+
+    await camera.async_camera_image()
+
+    assert camera.coordinator.image_bytes[DEVICE_ID] == b"fresh-snapshot"
+
+
+@pytest.mark.asyncio
+async def test_idle_stream_is_not_restarted_by_a_tile_refresh() -> None:
+    """``async_get_image`` starts the worker, so consulting a finished stream
+    reopened a retired Arlo URL on every tile poll — a camera wake attempt and
+    the restart-backoff loop, both of which 0.4.3 exists to prevent."""
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera.coordinator.image_bytes = {DEVICE_ID: b"fresh-snapshot"}  # type: ignore[attr-defined]
+    stream = _FakeStream()
+    camera.stream = stream  # type: ignore[assignment]
+    camera._attr_is_streaming = False
+
+    await camera.async_camera_image()
+
+    assert stream.starts == 0
+
+
+@pytest.mark.asyncio
+async def test_live_stream_still_wins_and_refreshes_the_cache() -> None:
+    """While Arlo reports the stream active the keyframe IS the freshest thing
+    there is — that is the case the branch was written for, and it has to keep
+    working, including for a disarmed camera where Arlo refuses snapshots."""
+    camera = _camera({"camera", "go2rtc", "stream"})
+    camera.coordinator.image_bytes = {DEVICE_ID: b"older-snapshot"}  # type: ignore[attr-defined]
+    camera.stream = _FakeStream(b"live-keyframe")  # type: ignore[assignment]
+    camera._attr_is_streaming = True
+
+    assert await camera.async_camera_image() == b"live-keyframe"
+    assert camera.coordinator.image_bytes[DEVICE_ID] == b"live-keyframe"

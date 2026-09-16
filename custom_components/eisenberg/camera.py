@@ -111,14 +111,34 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
         """Return the latest camera image.
 
         Preference order:
-        1. A live keyframe from HA's stream worker if a stream object
-           still exists — this gives a fresh image while or just after
-           live view, and is the only way to refresh the tile while the
-           camera is disarmed (Arlo refuses on-demand snapshots then).
+        1. A live keyframe from HA's stream worker, but only while Arlo
+           reports the stream actually running — that is the one window in
+           which the keyframe is the freshest image there is, and it is how
+           the tile refreshes on a disarmed camera (Arlo refuses on-demand
+           snapshots then).
         2. Bytes cached by the coordinator from MQTT-delivered URLs.
         3. Refetch from the most recent snapshot/thumbnail URL.
+
+        The gate is the whole of #34. A Stream object existing says nothing
+        about whether it is producing frames: it is built on the first live
+        view and survives the session. Consulting it afterwards returned
+        whatever keyframe the converter decoded last — peteramelang's yard
+        camera served a daylight frame at 20:01 while its neighbours were on
+        night infrared, with a newer snapshot already in the archive — and
+        then wrote that corpse over the fresher bytes in ``image_bytes``, so
+        the snapshot was not merely lost to this caller but to every later
+        one. Worse, ``Stream.async_get_image`` does ``await self.start()``,
+        which respawns the worker thread against the source the Stream was
+        built with. On a finished session that is a retired Arlo egress URL,
+        so every tile poll reopened it: a camera wake attempt and the
+        restart-backoff loop, both of which 0.4.3 exists to prevent.
+
+        "Just after live view" is still covered, and by the right mechanism:
+        ``_cache_last_stream_frame`` grabs the final keyframe on the
+        streaming-to-idle transition and stores it in ``image_bytes``, where
+        a later snapshot can legitimately supersede it.
         """
-        if self.stream is not None:
+        if self.stream is not None and self._attr_is_streaming:
             try:
                 frame = await self.stream.async_get_image(width=width, height=height)
             except Exception:
