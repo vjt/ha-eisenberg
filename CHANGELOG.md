@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.6 — 2026-09-17
+
+### Fixed
+
+- **The periodic health check is no longer starved by MQTT traffic.** Home
+  Assistant's `async_set_updated_data` is documented "notify listeners and
+  *reset refresh interval*", and every MQTT frame called it — so the 30-minute
+  check only ever ran after 30 minutes of total MQTT silence, and on an account
+  with any traffic a base-station heartbeat alone deferred it indefinitely.
+  Everything on that tick starved with it: the token refresh, the base-station
+  subscription renewal, the media prune, the MQTT reconnect. Pushes now notify
+  the entities without touching the schedule. Reported as an aside in #35 — a
+  token refresh measured at 5,845s against a documented worst case of 90
+  minutes — which turned out to be the reason the token in that same report had
+  expired at all.
+- **An authentication failure found outside the health check now asks for
+  re-authentication (#35).** When Arlo rejected the session during a stream
+  request and the silent re-login failed too, the error reached
+  `camera.stream_source`, which catches everything and returns `None`. The
+  entry went on reporting `loaded`, the user was never told the account needed
+  them, and 72 stream rejections were logged in ten minutes — each one spending
+  another login attempt, which is the retry loop that gets an Arlo account
+  locked out. A dead session now starts the reauth flow from the one place
+  every Arlo call passes through, and blocks further calls until a login
+  succeeds, so the storm cannot happen from any caller. A WAF refusal still
+  does not count as an auth verdict: it says nothing about the credentials.
+- **A login response without a `meta` block no longer crashes with
+  `KeyError` (#35).** The crash came from inside the client's own rate-limit
+  check, so a probable rate limit or block page surfaced as "Failed to set up"
+  and, in the reauth dialog, as "Unknown error occurred" — no reason to wait,
+  and every retry another login attempt. 0.4.2 typed the case where the body is
+  not JSON at all; this is the same boundary one layer in, and the hole named in
+  that issue's own reply. Valid JSON of an unexpected shape is now the same
+  typed, transient error, quoting the endpoint and what came back.
+
 ## 0.4.5 — 2026-09-16
 
 ### Fixed

@@ -12,6 +12,7 @@ Cookie persistence for the browser trust cookie is handled externally
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -78,6 +79,30 @@ async def _read_arlo_json(resp: ClientResponse) -> Any:
             f"{resp.method} {resp.url.path} returned {resp.status} "
             f"{resp.content_type}, not JSON: {snippet!r}"
         ) from err
+
+
+def _arlo_meta(body: Any, resp: ClientResponse) -> dict[str, Any]:
+    """Return the ocapi ``meta`` block, or say plainly that there was not one.
+
+    Every ocapi response is supposed to carry ``meta.code``, and the
+    rate-limit check is the first thing that reads it — so a body without
+    ``meta`` blew up as ``KeyError: 'meta'`` from inside the very guard meant
+    to detect a rate limit, and reached the user as "Failed to set up" or, in
+    the reauth dialog, "Unknown error occurred" (#35). 0.4.2 typed the case
+    where the body is not JSON at all; this is the same boundary one layer in.
+    Valid JSON of a shape we do not model is still Arlo's edge failing to
+    answer, not a verdict on the credentials — hence TransientAPIError, which
+    callers already know not to treat as an auth failure.
+    """
+    if isinstance(body, dict):
+        meta: Any = cast("dict[str, Any]", body).get("meta")
+        if isinstance(meta, dict):
+            return cast("dict[str, Any]", meta)
+    snippet = " ".join(json.dumps(body)[:_BODY_SNIPPET].split())
+    raise TransientAPIError(
+        f"{resp.method} {resp.url.path} returned {resp.status} with no usable "
+        f"'meta' block: {snippet}"
+    )
 
 
 def _raise_for_arlo_error(body: dict[str, Any], op: str) -> None:
@@ -300,12 +325,13 @@ class EisenbergClient:
             },
         ) as resp:
             body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-        if body["meta"].get("message") == "Too many requests":
+        if meta.get("message") == "Too many requests":
             raise RateLimitedError(
                 "Arlo is rate-limiting requests. Wait a few hours and try again."
             )
-        if body["meta"]["code"] != 200:
+        if meta["code"] != 200:
             raise AuthenticationError(f"Auth failed: {body['meta'].get('error', 'unknown')}")
 
         auth_data = body["data"]
@@ -329,9 +355,10 @@ class EisenbergClient:
             },
         ) as resp:
             body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-        _LOGGER.debug("getFactorId response: code=%s", body["meta"]["code"])
-        if body["meta"]["code"] == 200:
+        _LOGGER.debug("getFactorId response: code=%s", meta["code"])
+        if meta["code"] == 200:
             # Browser trusted — instant auth with factorId
             factor_id = body["data"]["factorId"]
             async with self.session.post(
@@ -344,8 +371,9 @@ class EisenbergClient:
                 },
             ) as resp:
                 body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-            if body["meta"]["code"] != 200:
+            if meta["code"] != 200:
                 raise AuthenticationError(f"Trusted startAuth failed: {body['meta'].get('error')}")
 
             start_data = body["data"]
@@ -371,12 +399,13 @@ class EisenbergClient:
             headers=self._ocapi_headers(token),
         ) as resp:
             body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-        if body["meta"].get("message") == "Too many requests":
+        if meta.get("message") == "Too many requests":
             raise RateLimitedError(
                 "Arlo is rate-limiting requests. Wait a few hours and try again."
             )
-        if body["meta"]["code"] != 200:
+        if meta["code"] != 200:
             raise AuthenticationError(f"getFactors failed: {body['meta'].get('error')}")
 
         items = body["data"].get("items", [])
@@ -416,12 +445,13 @@ class EisenbergClient:
             },
         ) as resp:
             body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-        if body["meta"].get("message") == "Too many requests":
+        if meta.get("message") == "Too many requests":
             raise RateLimitedError(
                 "Arlo is rate-limiting requests. Wait a few hours and try again."
             )
-        if body["meta"]["code"] != 200:
+        if meta["code"] != 200:
             raise AuthenticationError(f"startAuth failed: {body['meta'].get('error')}")
 
         return body["data"]["factorAuthCode"]
@@ -455,8 +485,9 @@ class EisenbergClient:
             json=payload,
         ) as resp:
             body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-        meta = body["meta"]
+        meta = meta
         msg = meta.get("message", "")
         _LOGGER.info("finishAuth: code=%s msg=%s", meta["code"], msg)
 
@@ -494,8 +525,9 @@ class EisenbergClient:
             },
         ) as resp:
             body = await _read_arlo_json(resp)
+            meta = _arlo_meta(body, resp)
 
-        if body["meta"]["code"] != 200:
+        if meta["code"] != 200:
             _LOGGER.warning("Failed to pair browser: %s", body)
 
     async def _establish_session(self) -> None:

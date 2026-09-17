@@ -38,7 +38,7 @@ def _coord(
     coord.locations = {loc.location_id: loc for loc in locations}
     coord._devices = devices or []
     coord.data = {}
-    coord.async_set_updated_data = lambda *_a, **_k: None  # type: ignore[method-assign]
+    coord._push_to_entities = lambda: None  # type: ignore[method-assign]
     return coord
 
 

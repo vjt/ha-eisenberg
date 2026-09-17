@@ -40,12 +40,12 @@ class _RecordingCoordinator:
         async def _archive(device_id: str, url: str, media_type: str, ext: str) -> None:
             self.archived.append((device_id, url, media_type, ext))
 
-        def _push(data: Any) -> None:
+        def _push() -> None:
             self.pushes += 1
 
         self.coord._cache_image_bytes = _cache  # type: ignore[method-assign]
         self.coord._archive_media = _archive  # type: ignore[method-assign]
-        self.coord.async_set_updated_data = _push  # type: ignore[method-assign]
+        self.coord._push_to_entities = _push  # type: ignore[method-assign]
 
 
 def _payload(url: str) -> dict[str, Any]:

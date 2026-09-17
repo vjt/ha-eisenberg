@@ -97,7 +97,7 @@ class TestConnectivityFromRestProperties:
         coord.basestation_connection = {}
         coord.device_states = {}
         coord.data = {}
-        coord.async_set_updated_data = lambda data: None  # type: ignore[method-assign]
+        coord._push_to_entities = lambda: None  # type: ignore[method-assign]
         coord.basestation_connection[CAMERA] = "available"
 
         sensor = BasestationConnectivity.__new__(BasestationConnectivity)

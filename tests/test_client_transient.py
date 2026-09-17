@@ -113,3 +113,41 @@ class TestWafBlockPage:
                 )
                 with pytest.raises(TransientAPIError):
                     await client.get_devices()
+
+
+class TestBodyWithoutMeta:
+    """#35.2: a JSON body that simply has no `meta` key.
+
+    0.4.2 wrapped bodies that are not JSON at all; the reply on #32 said
+    plainly that `body["meta"]["code"]` on an unvalidated body was the hole
+    still open. peteramelang found it: `KeyError: 'meta'` raised from inside
+    the client's own rate-limit check, surfacing as "Failed to set up" and, in
+    the reauth dialog, as "Unknown error occurred" — no reason to wait, and
+    every retry another login attempt.
+    """
+
+    async def test_missing_meta_is_transient_not_keyerror(self) -> None:
+        async with make_client() as client:
+            with aioresponses() as m:
+                m.post(f"{OCAPI}/api/auth", status=200, payload={"data": {}})
+                with pytest.raises(TransientAPIError):
+                    await client.login()
+
+    async def test_meta_of_the_wrong_shape_is_transient_too(self) -> None:
+        async with make_client() as client:
+            with aioresponses() as m:
+                m.post(f"{OCAPI}/api/auth", status=200, payload={"meta": "nope"})
+                with pytest.raises(TransientAPIError):
+                    await client.login()
+
+    async def test_the_message_names_the_endpoint_and_shows_the_body(self) -> None:
+        """ "Unknown error occurred" is what the user got. Say what came back."""
+        async with make_client() as client:
+            with aioresponses() as m:
+                m.post(f"{OCAPI}/api/auth", status=200, payload={"error": "slow down"})
+                with pytest.raises(TransientAPIError) as excinfo:
+                    await client.login()
+        message = str(excinfo.value)
+        assert "/api/auth" in message
+        assert "meta" in message
+        assert "slow down" in message

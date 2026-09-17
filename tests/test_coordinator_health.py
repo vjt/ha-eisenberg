@@ -121,7 +121,7 @@ def _coordinator(client: _FakeClient) -> Any:
     coord.basestation_connection = {}
     coord.locations = {}
     coord.data = {}
-    coord.async_set_updated_data = lambda data: None  # type: ignore[method-assign]
+    coord._push_to_entities = lambda: None  # type: ignore[method-assign]
 
     # The other health-tick steps are exercised by their own suites; here they
     # only need to not be the thing under test.
@@ -332,3 +332,58 @@ class TestReconnectBackoff:
 
         assert coord._mqtt is live
         assert coord._reconnect_task is None
+
+
+class TestMqttPushesDoNotStarveTheHealthCheck:
+    """#35.3: the 30-minute tick must be a schedule, not a hope.
+
+    peteramelang measured a token refresh at 5,845s when the documented worst
+    case is 90 minutes, and supposed the next tick was scheduled relative to
+    the previous one. It is sharper than that. HA's `async_set_updated_data`
+    is documented "Manually update data, notify listeners and **reset refresh
+    interval**" — it unsubscribes the pending refresh and schedules a fresh
+    full interval. Every MQTT push called it, and MQTT is this integration's
+    primary data source, so on an account with any traffic the health check
+    only ever fired after 30 minutes of total silence.
+
+    Everything on that tick starves with it: the token refresh (an expired
+    token is where #35.1 begins), the base-station subscription renewal that
+    #27 exists for, and the MQTT reconnect from #32.
+    """
+
+    def _pushing_coordinator(self) -> tuple[Any, list[str]]:
+        events: list[str] = []
+        coord = EisenbergCoordinator.__new__(EisenbergCoordinator)
+        coord.data = {}
+        coord.device_states = {}
+        coord.basestation_connection = {}
+        coord.locations = {}
+        coord._devices = []
+
+        def _reset_interval(data: Any) -> None:
+            events.append("timer-reset")
+
+        def _notify() -> None:
+            events.append("listeners-notified")
+
+        coord.async_set_updated_data = _reset_interval  # type: ignore[method-assign]
+        coord.async_update_listeners = _notify  # type: ignore[method-assign]
+        return coord, events
+
+    async def test_a_camera_frame_notifies_without_resetting_the_timer(self) -> None:
+        coord, events = self._pushing_coordinator()
+        await coord._handle_camera_state(
+            "d/CLOUD/out/cameras/CAM/is", {"properties": {"activityState": "idle"}}
+        )
+        assert "listeners-notified" in events, "entities still have to update"
+        assert "timer-reset" not in events, "an MQTT push must not defer the health check"
+
+    async def test_a_basestation_heartbeat_does_not_reset_the_timer(self) -> None:
+        """The heartbeat is frequent and unsolicited — the worst offender."""
+        coord, events = self._pushing_coordinator()
+        await coord._handle_basestation(
+            "d/CLOUD/out/basestation/is",
+            {"from": "BASE", "properties": {"connectionState": "available"}},
+        )
+        assert "listeners-notified" in events
+        assert "timer-reset" not in events

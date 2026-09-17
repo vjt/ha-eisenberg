@@ -78,10 +78,10 @@ class _RecordingCoordinator:
         self.coord.data = {}
         self.pushes = 0
 
-        def _push(data: Any) -> None:
+        def _push() -> None:
             self.pushes += 1
 
-        self.coord.async_set_updated_data = _push  # type: ignore[method-assign]
+        self.coord._push_to_entities = _push  # type: ignore[method-assign]
 
 
 class _RecordingClient:
@@ -111,7 +111,7 @@ def _coordinator_with_devices(
     coord.device_states = {}
     coord.basestation_connection = {}
     coord.data = {}
-    coord.async_set_updated_data = lambda data: None  # type: ignore[method-assign]
+    coord._push_to_entities = lambda: None  # type: ignore[method-assign]
     client = client or _RecordingClient()
     coord.client = client  # type: ignore[assignment]
     return coord, client

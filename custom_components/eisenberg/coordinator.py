@@ -151,6 +151,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # one into existence and leave an orphan listening in the background.
         self._mqtt_lock = asyncio.Lock()
         self._reconnect_task: asyncio.Task[None] | None = None
+        # Set when Arlo has rejected the session and the silent re-login could
+        # not recover it. Blocks further Arlo calls until a login succeeds, so
+        # a dead session cannot be retried into a rate-limit lockout (#35).
+        self._auth_is_dead = False
 
         # Entity state — updated by MQTT handlers.
         self.device_states: dict[str, DeviceState] = {}
@@ -229,6 +233,8 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         _LOGGER.info("Silent login starting (trust cookie based)")
         await self.client.login()
+        # A session again: whatever blocked calls before no longer applies.
+        self._auth_is_dead = False
         _LOGGER.info("Silent login complete; mqtt_url=%s", self.client.mqtt_url)
         await self._save_cookies()
 
@@ -355,6 +361,31 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             _LOGGER.debug("Image cache fetch failed for %s", device_id, exc_info=True)
 
+    def _push_to_entities(self) -> None:
+        """Publish MQTT-driven state to the entities, without deferring the tick.
+
+        HA's ``async_set_updated_data`` is documented "Manually update data,
+        notify listeners and **reset refresh interval**" — it cancels the
+        pending refresh and schedules a whole fresh interval. That is right for
+        an integration whose push IS its poll, and wrong for this one: our
+        periodic tick is not a data fetch, it is maintenance — the token
+        refresh, the base-station subscription renewal (#27), the MQTT
+        reconnect (#32), the media prune.
+
+        Every MQTT frame used to call it, and MQTT is the primary data source
+        here, so on an account with any traffic the 30-minute health check only
+        fired after 30 minutes of total MQTT silence — a base-station heartbeat
+        alone was enough to push it back indefinitely. peteramelang caught the
+        shadow of this as a token refresh at 5,845s against a documented worst
+        case of 90 minutes (#35), and said he was not claiming a defect from
+        it; he had found the reason the token in that same report expired.
+
+        Entities get their update; the schedule is left alone.
+        """
+        self.data = self.data or {}
+        self.last_update_success = True
+        self.async_update_listeners()
+
     async def call_with_session_retry[T](
         self,
         op_name: str,
@@ -369,11 +400,28 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         We surface that as SessionExpiredError from the client, catch it
         here, force a silent relogin via the trust cookie, and retry the
-        same call once. If the relogin itself fails (trust cookie also
-        expired, rate limit, MFA required), let the auth exception
-        bubble — the coordinator's update loop turns it into a HA
-        reauth flow.
+        same call once.
+
+        When the relogin fails too, the session is dead and only the user can
+        revive it, so the reauth flow is started from here. The previous
+        version of this docstring claimed the exception would "bubble — the
+        coordinator's update loop turns it into a HA reauth flow", and that
+        was simply wrong: the callers are entities, not the update loop, and
+        camera.stream_source catches everything and returns None. The entry
+        went on reporting `loaded`, the user was never told the account needed
+        them, and **72 start_stream rejections were logged in ten minutes**,
+        each one spending another silent login — which is exactly the retry
+        loop _login_silent warns can lock the account out (#35).
+
+        So the block is sticky: once the session is known dead, later calls
+        fail immediately without touching Arlo, until a login succeeds again.
+        Only genuine auth verdicts count. A TransientAPIError means the edge
+        refused to answer and says nothing about the credentials (#32), so it
+        propagates untouched — starting a reauth the user cannot act on would
+        be worse than the silence.
         """
+        if self._auth_is_dead:
+            raise ConfigEntryAuthFailed("Arlo rejected this session; re-authenticate to continue")
         try:
             return await op()
         except SessionExpiredError:
@@ -381,8 +429,30 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Arlo rejected token during %s — re-logging in and retrying once",
                 op_name,
             )
-            await self._login_silent()
+            try:
+                await self._login_silent()
+            except (AuthenticationError, RateLimitedError) as err:
+                # MfaRequired is an AuthenticationError, so it lands here too.
+                self._mark_auth_dead(op_name, err)
+                raise ConfigEntryAuthFailed(str(err)) from err
             return await op()
+
+    def _mark_auth_dead(self, op_name: str, err: Exception) -> None:
+        """Stop asking Arlo, and ask the user instead — once.
+
+        HA dedupes concurrent reauth flows for the same entry, but the log
+        storm and the spent login attempts are ours to prevent.
+        """
+        if self._auth_is_dead:
+            return
+        self._auth_is_dead = True
+        _LOGGER.error(
+            "Arlo rejected the session during %s and the silent re-login failed "
+            "(%s). Pausing Arlo requests and asking for re-authentication.",
+            op_name,
+            err,
+        )
+        self.entry.async_start_reauth(self.hass)
 
     def location_for_device(self, device: DeviceInfo) -> LocationState | None:
         """Resolve a device to its location, falling back when unmatched.
@@ -533,7 +603,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             location.active_mode = result.properties.mode
         else:
             location.active_mode = mode
-        self.async_set_updated_data(self.data or {})
+        self._push_to_entities()
 
     async def _save_cookies(self) -> None:
         """Persist trust cookies from the session to the config entry."""
@@ -896,7 +966,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(err, dict):
                 msg = str(err.get("message"))  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
                 _LOGGER.info("Camera %s rejected request: %s", device_id, msg)
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
         except Exception:
             _LOGGER.warning(
                 "Failed to parse camera state for %s: %s",
@@ -917,7 +987,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Archive if configured
         await self._archive_media(device_id, url, "snapshot", "jpg")
 
-        self.async_set_updated_data(self.data or {})
+        self._push_to_entities()
 
     async def _handle_snapshot(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle snapshot available notification."""
@@ -969,7 +1039,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state = SirenState.model_validate(properties)
             self.siren_states[device_id] = state
             _LOGGER.debug("Siren %s: %s", device_id, state.siren_state)
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
         except Exception:
             _LOGGER.warning(
                 "Failed to parse siren for %s: %s",
@@ -1024,7 +1094,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     },
                 )
 
-                self.async_set_updated_data(self.data or {})
+                self._push_to_entities()
             except Exception:
                 _LOGGER.warning(
                     "Failed to parse motion event: %s",
@@ -1038,7 +1108,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.debug(
                     "Mode change: location=%s mode=%s", event.location_id, event.active_mode
                 )
-                self.async_set_updated_data(self.data or {})
+                self._push_to_entities()
             except Exception:
                 _LOGGER.warning(
                     "Failed to parse mode change: %s",
@@ -1077,7 +1147,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 mode.properties.mode,
             )
             _LOGGER.debug("Active mode update: %s", mode.properties.mode)
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
         except Exception:
             _LOGGER.warning(
                 "Failed to parse active mode: %s",
@@ -1132,7 +1202,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if updated:
             _LOGGER.info("Base station reported state for %d device(s)", updated)
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
 
     def _merge_device_state(self, device_id: str, incoming: DeviceState) -> bool:
         """Fold the non-null fields of `incoming` onto the stored state.
@@ -1192,7 +1262,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if updated:
             _LOGGER.debug("Refreshed properties for %d device(s)", updated)
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
 
     async def _request_initial_snapshots(self) -> None:
         """Seed the tiles, for cameras only.
@@ -1228,7 +1298,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.debug("Base station %s confirmed our event subscription", base_id)
         if self.basestation_connection.get(base_id) != "available":
             self.basestation_connection[base_id] = "available"
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
 
     async def _maybe_renew_base_stations(self) -> None:
         """Renew the base-station registrations, unless one was just made.
@@ -1294,7 +1364,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
         if changed:
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
 
     async def _handle_device_states(self, topic: str, payload: dict[str, Any]) -> None:
         """Per-device state broadcast — currently we only care about activeMode.
@@ -1324,7 +1394,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             location = self.location_for_device(device) if device is not None else None
             self._apply_mode(location.location_id if location is not None else None, active_mode)
-            self.async_set_updated_data(self.data or {})
+            self._push_to_entities()
 
     async def _handle_geofences(self, topic: str, payload: dict[str, Any]) -> None:
         """Geofence config push from the Arlo app — informational only."""
@@ -1361,7 +1431,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 gateway_id,
                 state.connection_state,
             )
-        self.async_set_updated_data(self.data or {})
+        self._push_to_entities()
 
     async def _ensure_mqtt(self) -> bool:
         """Bring the MQTT stream up if it is down. True when it is up.
