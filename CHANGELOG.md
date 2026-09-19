@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.8 — 2026-09-19
+
+### Fixed
+
+- **The icon is now where Home Assistant actually reads it (#36).** 0.4.7 put it
+  at `brand/` in the repo root and said it would only appear once the PNGs were
+  merged into `home-assistant/brands`. That was wrong on both counts. Since
+  Home Assistant 2026.3 a custom integration serves brand images straight out of
+  its own `custom_components/<domain>/brand/` directory, and those take priority
+  over the brands CDN; `home-assistant/brands` no longer accepts icons for
+  custom integrations at all. The assets moved to
+  `custom_components/eisenberg/brand/`, which ships with the integration, so the
+  icon appears on upgrade with nothing else to do. Thanks to @pallemannen, who
+  asked for that exact path in the first place and corrected the claim.
+
 ## 0.4.7 — 2026-09-19
 
 ### Added
