@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"
+     role="img" aria-label="Eisenberg — a network of Arlo cameras">
+  <title>Eisenberg</title>
+  <!-- A camera iris at the hub, three cameras wired to it: the integration is
+       one event stream fanning out to every camera on the account. Drawn as
+       flat geometry so it survives being scaled down to 40px in Home
+       Assistant's integrations list, where most of this detail is gone and
+       only the pinwheel of the aperture has to still read as a lens. -->
+  <defs>
+    <linearGradient id="eisenberg-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#19C6B0"/>
+      <stop offset="1" stop-color="#0F4C81"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#eisenberg-bg)"/>
+  <g stroke="#FFFFFF" fill="#FFFFFF">
+    <g fill="none" stroke-width="11.0" stroke-linecap="round">
+      <line x1="128.00" y1="80.50" x2="128.00" y2="53.50"/>
+      <line x1="169.14" y1="151.75" x2="192.52" y2="165.25"/>
+      <line x1="86.86" y1="151.75" x2="63.48" y2="165.25"/>
+    </g>
+    <g stroke="none">
+      <circle cx="128.00" cy="35.00" r="17.5"/>
+      <circle cx="208.54" cy="174.50" r="17.5"/>
+      <circle cx="47.46" cy="174.50" r="17.5"/>
+    </g>
+    <circle cx="128.0" cy="128.0" r="40.0" fill="none" stroke-width="13.0"/>
+    <polygon points="145.32,138.00 128.00,148.00 110.68,138.00 110.68,118.00 128.00,108.00 145.32,118.00" stroke="none"/>
+    <g fill="none" stroke-width="7.0" stroke-linecap="round">
+      <line x1="145.32" y1="138.00" x2="162.50" y2="128.00"/>
+      <line x1="128.00" y1="148.00" x2="145.25" y2="157.88"/>
+      <line x1="110.68" y1="138.00" x2="110.75" y2="157.88"/>
+      <line x1="110.68" y1="118.00" x2="93.50" y2="128.00"/>
+      <line x1="128.00" y1="108.00" x2="110.75" y2="98.12"/>
+      <line x1="145.32" y1="118.00" x2="145.25" y2="98.12"/>
+    </g>
+  </g>
+</svg>
