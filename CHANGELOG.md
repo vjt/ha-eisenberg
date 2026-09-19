@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.7 — 2026-09-19
+
+### Added
+
+- **A brand icon (#36).** A camera iris at the hub with three cameras wired into
+  it — one event stream fanning out to every camera on the account. Authored as
+  SVG under `brand/`, with 256 and 512 PNGs rendered from it. No functional
+  change: Home Assistant resolves integration logos from
+  `brands.home-assistant.io`, so the icon only becomes visible once those PNGs
+  are merged into `home-assistant/brands`. `brand/README.md` records the render
+  command and why the files do nothing on their own.
+
 ## 0.4.6 — 2026-09-17
 
 ### Fixed
