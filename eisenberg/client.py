@@ -580,6 +580,22 @@ class EisenbergClient:
         # Accounts with cameras on multiple base stations have a different
         # xCloudId per camera; see _device_cloud_id.
         for d in devices:
+            # Every field that decides how a per-device command is addressed.
+            # Without it a "device does not exist" report (2217) can't be told
+            # apart from a stale parentId, a stale xCloudId or an Arlo-side
+            # fault — the failing account is the only place to read them, and
+            # the enumeration was previously invisible at every log level.
+            _LOGGER.debug(
+                "device %s (%s) model=%s type=%s parentId=%s xCloudId=%s mqttTopics=%d state=%s",
+                d.device_id,
+                d.device_name,
+                d.model_id,
+                d.device_type,
+                d.parent_id,
+                d.x_cloud_id,
+                len(d.allowed_mqtt_topics),
+                d.properties,
+            )
             self._device_cloud_ids[d.device_id] = d.x_cloud_id
             # Route per-device commands to the controlling base station. A
             # base-less camera is its own gateway, so fall back to its own id.
@@ -625,23 +641,38 @@ class EisenbergClient:
         if self.token is None:
             raise RuntimeError("Not authenticated")
 
+        headers = self._device_headers_mobile(self.token, device_id)
+        payload = {
+            "from": f"{self.user_id}_web",
+            "to": device_id,
+            "action": "set",
+            "resource": f"cameras/{device_id}",
+            "publishResponse": True,
+            "transId": f"web!stream!{int(time.time())}",
+            "properties": {
+                "activityState": "startUserStream",
+                "cameraId": device_id,
+            },
+        }
+        # The exception carries Arlo's answer but not our question, so a 2217
+        # ("the device does not exist") told us nothing about which id Arlo was
+        # rejecting: the addressee, the resource or the xCloudId routing it.
+        # Log all three alongside the raw reply (issue #24).
+        _LOGGER.debug(
+            "start_stream request: xCloudId=%s parentId=%s payload=%s",
+            headers["xCloudId"],
+            self._device_target(device_id),
+            payload,
+        )
+
         async with self.session.post(
             f"{MYAPI_BASE}/hmsweb/users/devices/startStream",
-            headers=self._device_headers_mobile(self.token, device_id),
-            json={
-                "from": f"{self.user_id}_web",
-                "to": device_id,
-                "action": "set",
-                "resource": f"cameras/{device_id}",
-                "publishResponse": True,
-                "transId": f"web!stream!{int(time.time())}",
-                "properties": {
-                    "activityState": "startUserStream",
-                    "cameraId": device_id,
-                },
-            },
+            headers=headers,
+            json=payload,
         ) as resp:
             body = await _read_arlo_json(resp)
+
+        _LOGGER.debug("start_stream response: %s", body)
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "start_stream")

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.9 — 2026-09-21
+
+### Added
+
+- **The device list and every startStream attempt are now logged at DEBUG
+  (#24).** A camera that Arlo's own app streams fine has been rejected by
+  `startStream` with `2217 The device does not exist.` — for a device id the
+  REST device list had enumerated as a valid camera moments earlier. The
+  exception carried Arlo's answer but not our question, and the device
+  enumeration was logged at no level at all, so a reporter's debug log could
+  not say which id Arlo was rejecting: the addressee, the resource, or the
+  xCloudId routing the request.
+
+  `get_devices()` now logs, per device, every field that decides how a
+  per-device command is addressed — `modelId`, `deviceType`, `parentId`,
+  `xCloudId`, the count of declared MQTT topics and the `properties` block.
+  `start_stream()` logs the outgoing envelope together with the xCloudId
+  header and the resolved parent id, then the raw reply. No behaviour change:
+  the routing is untouched, because on the affected account ten other cameras
+  stream through the identical code path. This is the evidence that was
+  missing, not a guess at the fix.
+
 ## 0.4.8 — 2026-09-19
 
 ### Fixed

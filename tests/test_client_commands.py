@@ -453,3 +453,79 @@ class TestRegisterEventSubscription:
             with pytest.raises(APIError):
                 async with self._client_with_base() as client:
                     await client.register_event_subscription("BASE-1")
+
+
+class TestStreamDiagnostics:
+    """A 2217 rejection must leave enough in the log to place the blame (#24).
+
+    Arlo answers "the device does not exist" to a startStream whose device id
+    the REST device list had just enumerated as a valid camera. The exception
+    carries Arlo's answer but not our question, and the device list itself was
+    logged at no level at all — so a reporter's log could not say whether the
+    rejected id was the addressee, the resource or the xCloudId routing it.
+    Both are now DEBUG, which is what the failing account can actually hand back.
+    """
+
+    @staticmethod
+    def _devices_payload() -> dict:
+        return {
+            "success": True,
+            "data": [
+                {
+                    "deviceId": "BASE",
+                    "deviceName": "Base",
+                    "modelId": "VMB4000",
+                    "deviceType": "basestation",
+                    "xCloudId": "XC-BASE",
+                },
+                {
+                    "deviceId": "CAM",
+                    "deviceName": "Pool",
+                    "modelId": "VMC4060P",
+                    "deviceType": "camera",
+                    "xCloudId": "XC-BASE",
+                    "parentId": "BASE",
+                    "allowedMqttTopics": ["d/XC-BASE/out/cameras/CAM/#"],
+                },
+            ],
+        }
+
+    async def test_device_enumeration_logs_every_routing_field(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("DEBUG", logger="eisenberg.client"), aioresponses() as m:
+            m.get(f"{MYAPI}/hmsweb/v2/users/devices", payload=self._devices_payload())
+            async with make_authed_client() as client:
+                client._device_cloud_ids = {}
+                client._device_parent_ids = {}
+                await client.get_devices()
+
+        line = next(t for t in caplog.messages if t.startswith("device CAM "))
+        for field in ("VMC4060P", "camera", "parentId=BASE", "xCloudId=XC-BASE"):
+            assert field in line
+
+    async def test_rejected_stream_logs_the_request_and_the_raw_reply(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rejection = {
+            "success": False,
+            "data": {"error": "2217", "message": "The device does not exist."},
+        }
+        with caplog.at_level("DEBUG", logger="eisenberg.client"), aioresponses() as m:
+            m.get(f"{MYAPI}/hmsweb/v2/users/devices", payload=self._devices_payload())
+            m.post(f"{MYAPI}/hmsweb/users/devices/startStream", payload=rejection)
+            async with make_authed_client() as client:
+                client._device_cloud_ids = {}
+                client._device_parent_ids = {}
+                await client.get_devices()
+                with pytest.raises(APIError):
+                    await client.start_stream("CAM")
+
+        request = next(t for t in caplog.messages if t.startswith("start_stream request:"))
+        assert "xCloudId=XC-BASE" in request
+        assert "parentId=BASE" in request
+        assert "'to': 'CAM'" in request
+        assert "'resource': 'cameras/CAM'" in request
+
+        reply = next(t for t in caplog.messages if t.startswith("start_stream response:"))
+        assert "2217" in reply
