@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.10 — 2026-09-30
+
+### Fixed
+
+- **Live view on a camera that has a base station (#24).** `startStream` was
+  addressed to the camera's own id. Arlo routes per-device commands through the
+  controlling gateway, so a camera with a `parentId` was rejected with
+  `2217 The device does not exist.` — the same class of refusal as the `4006`
+  that #16 fixed for snapshots, siren and spotlight, on the one call that change
+  missed. The request now targets the base station, exactly like every other
+  per-device command and like pyaarlo, which has always addressed the parent
+  here. The camera remains the subject of the request: `resource` and `cameraId`
+  still carry its id, only the addressee moves. Base-less cameras are their own
+  gateway, so nothing changes for them.
+
+  Found by reading @eldbollen's log against @DirkWeber1972's, the second
+  unrelated account to hit it — and it was visible only because 0.4.9 had
+  started logging the outgoing request. I had ruled this cause out on 0.4.9 on
+  the grounds that the reporter's other ten cameras streamed through the
+  identical path; he had never said that, I inferred it from his silence.
+
 ## 0.4.9 — 2026-09-21
 
 ### Added

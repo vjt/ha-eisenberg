@@ -294,6 +294,45 @@ class TestBaseStationRouting:
             assert body["to"] == "BASE"
             assert body["resource"] == "siren/CAM"
 
+    async def test_start_stream_targets_base(self) -> None:
+        """startStream was the one per-device command #16 never converted (#24).
+
+        Arlo answers 2217 ("The device does not exist.") to a startStream
+        addressed to a camera that has a controlling gateway — the same class
+        of rejection as the 4006 that #16 fixed for snapshot/siren/spotlight,
+        and reported from two unrelated accounts. pyaarlo has always addressed
+        the parent here (camera.py `_start_stream`: `"to": self.parent_id`).
+        The camera stays the subject: `resource` and `cameraId` keep its id.
+        """
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+                m.post(
+                    f"{MYAPI}/hmsweb/users/devices/startStream",
+                    payload={"success": True, "data": {"url": "rtsp://stream"}},
+                )
+                await client.start_stream("CAM")
+
+            _url, body = self._post(m)
+            assert body["to"] == "BASE"
+            assert body["resource"] == "cameras/CAM"
+            assert body["properties"]["cameraId"] == "CAM"
+
+    async def test_base_less_start_stream_targets_itself(self) -> None:
+        """A base-less camera is its own gateway — routing must not move it."""
+        with aioresponses() as m:
+            async with make_authed_client() as client:
+                await self._discover(m, client)
+                m.post(
+                    f"{MYAPI}/hmsweb/users/devices/startStream",
+                    payload={"success": True, "data": {"url": "rtsp://stream"}},
+                )
+                await client.start_stream("SOLO")
+
+            _url, body = self._post(m)
+            assert body["to"] == "SOLO"
+            assert body["resource"] == "cameras/SOLO"
+
 
 class TestGetDevicesDedup:
     """A base station with a built-in siren is returned by Arlo as TWO device
@@ -523,8 +562,7 @@ class TestStreamDiagnostics:
 
         request = next(t for t in caplog.messages if t.startswith("start_stream request:"))
         assert "xCloudId=XC-BASE" in request
-        assert "parentId=BASE" in request
-        assert "'to': 'CAM'" in request
+        assert "'to': 'BASE'" in request
         assert "'resource': 'cameras/CAM'" in request
 
         reply = next(t for t in caplog.messages if t.startswith("start_stream response:"))

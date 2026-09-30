@@ -641,10 +641,19 @@ class EisenbergClient:
         if self.token is None:
             raise RuntimeError("Not authenticated")
 
+        # Addressed to the controlling base station, like every other
+        # per-device command since #16 — this was the one call that change
+        # missed. A camera with a gateway is rejected with 2217 ("The device
+        # does not exist.") when the request is addressed to its own id, the
+        # same class of refusal as the 4006 that motivated #16, reported from
+        # two unrelated accounts (issue #24). pyaarlo has always addressed the
+        # parent here too. The camera stays the subject of the request:
+        # `resource` and `cameraId` keep its id, only the addressee moves.
         headers = self._device_headers_mobile(self.token, device_id)
+        target = self._device_target(device_id)
         payload = {
             "from": f"{self.user_id}_web",
-            "to": device_id,
+            "to": target,
             "action": "set",
             "resource": f"cameras/{device_id}",
             "publishResponse": True,
@@ -655,13 +664,11 @@ class EisenbergClient:
             },
         }
         # The exception carries Arlo's answer but not our question, so a 2217
-        # ("the device does not exist") told us nothing about which id Arlo was
-        # rejecting: the addressee, the resource or the xCloudId routing it.
-        # Log all three alongside the raw reply (issue #24).
+        # told us nothing about which id Arlo was rejecting: the addressee, the
+        # resource or the xCloudId routing it. Log all three with the raw reply.
         _LOGGER.debug(
-            "start_stream request: xCloudId=%s parentId=%s payload=%s",
+            "start_stream request: xCloudId=%s payload=%s",
             headers["xCloudId"],
-            self._device_target(device_id),
             payload,
         )
 
