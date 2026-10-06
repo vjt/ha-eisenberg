@@ -389,7 +389,9 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self._cleanup_client()
                 return await self.async_step_reauth_password()
             else:
-                # Login succeeded silently (cookie still valid somehow)
+                # No factor was asked for. Either the trust cookie is still
+                # good, or Arlo has MFA disabled service-side and the issued
+                # token is the whole of it (#37) — both are a finished login.
                 await self._cleanup_client()
                 return self._finalize_reauth()
 

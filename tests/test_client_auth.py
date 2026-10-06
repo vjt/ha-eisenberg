@@ -160,6 +160,156 @@ class TestMfaDiscovery:
             assert all("/api/startAuth" not in str(req) for req in requests)
 
 
+class TestMfaDisabledByService:
+    """Arlo turned MFA off service-wide on 2026-10-06 (#37).
+
+    `/api/auth` answers 200 with a new `MFA_State: DISABLED` field, still
+    saying `authCompleted: false`, and both `getFactorId` and `getFactors`
+    then return `9306 "Mfa disabled by service"`. There is no second factor
+    left to satisfy and no browser-trust factor to mint — but the access
+    token `/api/auth` already issued works against myapi as-is (verified
+    live against session/v3 and the device list). So the MFA branch must
+    not be entered at all: there is nothing there to ask for.
+    """
+
+    @staticmethod
+    def _mocked(m: aioresponses) -> None:
+        m.post(
+            f"{OCAPI}/api/auth",
+            payload={
+                "data": {
+                    "_type": "AccessTokenV2",
+                    "token": "issued-token",
+                    "userId": "USER-123",
+                    "mfa": True,
+                    "authCompleted": False,
+                    "MFA_State": "DISABLED",
+                },
+                "meta": {"code": 200},
+            },
+        )
+        m.get(
+            f"{MYAPI}/hmsweb/users/session/v3",
+            payload={"data": {"mqttUrl": "wss://mqtt.arlo.com:8084"}, "success": True},
+        )
+
+    async def test_login_completes_on_the_issued_token(self) -> None:
+        with aioresponses() as m:
+            self._mocked(m)
+            client = make_client()
+            async with client:
+                await client.login()
+                assert client.token == "issued-token"
+                assert client.user_id == "USER-123"
+                assert client.mqtt_url == "wss://mqtt.arlo.com:8084"
+
+    async def test_login_never_asks_for_a_factor(self) -> None:
+        """The MFA endpoints are the ones returning 9306 — don't call them."""
+        with aioresponses() as m:
+            self._mocked(m)
+            client = make_client()
+            async with client:
+                await client.login()
+
+            called = [str(url) for _method, url in m.requests]
+            assert not any("getFactorId" in u for u in called)
+            assert not any("getFactors" in u for u in called)
+            assert not any("startAuth" in u for u in called)
+
+    async def test_mfa_still_live_takes_the_factor_path(self) -> None:
+        """Guard: when Arlo re-enables MFA, discovery must resume."""
+        with aioresponses() as m:
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                        "MFA_State": "ENABLED",
+                    },
+                    "meta": {"code": 200},
+                },
+            )
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+            )
+            m.get(GET_FACTORS_RE, payload=_TWO_FACTORS_PAYLOAD)
+
+            client = make_client()
+            async with client:
+                with pytest.raises(MfaRequired):
+                    await client.login()
+
+    async def test_unknown_mfa_state_takes_the_factor_path(self) -> None:
+        """An MFA_State we have never seen must not be read as "disabled"."""
+        with aioresponses() as m:
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                        "MFA_State": "SOMETHING_ARLO_INVENTED",
+                    },
+                    "meta": {"code": 200},
+                },
+            )
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+            )
+            m.get(GET_FACTORS_RE, payload=_TWO_FACTORS_PAYLOAD)
+
+            client = make_client()
+            async with client:
+                with pytest.raises(MfaRequired):
+                    await client.login()
+
+
+class TestMfaErrorMessages:
+    """9306 must reach the user as words, not just a number (#37).
+
+    Three reporters filed "getFactors failed: 9306" within hours, and the
+    number alone said nothing. Arlo's own `message` explains it.
+    """
+
+    async def test_get_factors_failure_carries_arlos_message(self) -> None:
+        with aioresponses() as m:
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                    },
+                    "meta": {"code": 200},
+                },
+            )
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+            )
+            m.get(
+                GET_FACTORS_RE,
+                payload={
+                    "data": {},
+                    "meta": {"code": 400, "error": 9306, "message": "Mfa disabled by service"},
+                },
+            )
+
+            client = make_client()
+            async with client:
+                with pytest.raises(AuthenticationError) as exc_info:
+                    await client.login()
+
+            assert "9306" in str(exc_info.value)
+            assert "Mfa disabled by service" in str(exc_info.value)
+
+
 class TestStartMfa:
     async def _login_until_mfa(self, m: aioresponses) -> EisenbergClient:
         m.post(

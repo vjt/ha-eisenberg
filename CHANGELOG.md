@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 — 2026-10-06
+
+### Fixed
+
+- **Login after Arlo disabled MFA service-wide (#37).** On 2026-10-06 Arlo
+  turned two-step verification off across the service — the 2FA settings
+  disappeared from the Arlo Secure app and from my.arlo.com, and every
+  integration that authenticates the way this one does stopped working within
+  the hour. `POST /api/auth` still answers `200` and still says
+  `authCompleted: false`, but it now carries a new field, `MFA_State:
+  DISABLED`, and both `getFactorId` and `getFactors` answer
+  `9306 "Mfa disabled by service"`. There is no second factor left to satisfy
+  and no browser-trust factor to mint, so the old flow could only fail:
+  `Authentication failed while fetching eisenberg data: getFactors failed: 9306`.
+
+  The access token `/api/auth` already issues in that state is fully usable —
+  verified live against `session/v3` and the device list before any code was
+  written. `login()` now recognises `MFA_State: DISABLED` and completes on that
+  token, skipping the MFA endpoints entirely. `_establish_session()` still runs,
+  so a token Arlo would not honour fails loudly there rather than being trusted
+  blind.
+
+  An `MFA_State` we have not seen — including Arlo re-enabling it — falls
+  through to the existing factor-discovery flow rather than being read as
+  "disabled", and the field is deliberately not parsed into an enum: a value we
+  failed to predict must not crash the one call that gets us back in.
+
+  Thanks to @hjwirken-rgb, who spotted that the 2FA settings had vanished from
+  both the app and my.arlo.com and said so in the report — that was the clue
+  that this was a service-side change and not a broken account — and to
+  @AlexDevsTheWeb and @rddyck for confirming it inside the hour on their own
+  installs.
+
+### Changed
+
+- **A failed `getFactors` now quotes Arlo's message, not just its error code.**
+  Three reporters filed `getFactors failed: 9306` within hours of each other and
+  the bare number explained nothing; `Mfa disabled by service` explains it.
+
 ## 0.4.10 — 2026-09-30
 
 ### Fixed
