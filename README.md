@@ -1,6 +1,6 @@
 # Eisenberg — Arlo for Home Assistant
 
-<img src="docs/hero.jpg" alt="" width="100%">
+<img src="docs/hero.jpg" alt="A skater grinding a rail that doubles as a data bus, with camera irises wired back to a central hub" width="100%">
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/v/release/vjt/ha-eisenberg?include_prereleases&sort=semver)](https://github.com/vjt/ha-eisenberg/releases)

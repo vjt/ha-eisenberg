@@ -8,5 +8,8 @@ dist/
 !.claude/skills
 session.json
 cookies.json
+# Camera captures and clips pulled off Arlo during development.
 *.jpg
 *.mp4
+# ...but docs/ holds deliberate repo assets, not captures.
+!docs/*.jpg
