@@ -60,6 +60,7 @@ from .const import (
     DEFAULT_MEDIA_RETENTION_DAYS,
     DOMAIN,
     EVENT_MEDIA,
+    TRUST_COOKIE_PREFIX,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -612,7 +613,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cookie_jar = self._http_session.cookie_jar
         cookies: list[dict[str, str]] = []
         for morsel in cookie_jar:
-            if morsel.key.startswith("browser_trust_"):
+            if morsel.key.startswith(TRUST_COOKIE_PREFIX):
                 cookies.append(
                     {
                         "name": morsel.key,
@@ -637,7 +638,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # (__cf_bm, AWSALB, JSESSIONID) which expire quickly and cause issues
         saved_cookies: list[dict[str, str]] = self.entry.data.get(CONF_TRUST_COOKIE, [])
         for cookie_data in saved_cookies:
-            if not cookie_data["name"].startswith("browser_trust_"):
+            if not cookie_data["name"].startswith(TRUST_COOKIE_PREFIX):
                 continue
             domain = cookie_data.get("domain", "ocapi-app.arlo.com")
             if domain.startswith("."):
@@ -652,7 +653,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.info(
             "Restored %d cookies, trust cookie present: %s",
             len(saved_cookies),
-            any(c["name"].startswith("browser_trust_") for c in saved_cookies),
+            any(c["name"].startswith(TRUST_COOKIE_PREFIX) for c in saved_cookies),
         )
 
         self._http_session = aiohttp.ClientSession(cookie_jar=cookie_jar)

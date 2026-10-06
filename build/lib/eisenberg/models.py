@@ -31,6 +31,48 @@ class FactorType(StrEnum):
     SMS = "SMS"
 
 
+class MfaState(StrEnum):
+    """Service-side MFA availability, from /api/auth's `MFA_State`.
+
+    Only DISABLED is listed because it is the only value ever observed:
+    Arlo turned MFA off service-wide on 2026-10-06 and started sending it
+    (issue #37). Whatever it says when MFA is live is unknown, so
+    AuthData types the field as a plain string and compares against this
+    — never parses into this enum. A state we have not seen must fall
+    through to the factor flow, not crash the login that is our only way
+    back in.
+    """
+
+    DISABLED = "DISABLED"
+
+
+class AuthData(BaseModel):
+    """The `data` block of POST /api/auth.
+
+    `auth_completed` decides whether the token is usable as issued, so it
+    is required: defaulting it would silently turn a malformed response
+    into "not authenticated" and send us down the MFA path for no reason.
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    token: str
+    user_id: str = Field(alias="userId")
+    auth_completed: bool = Field(alias="authCompleted")
+    # Absent until 2026-10-06; absent again if Arlo drops it.
+    mfa_state: str | None = Field(None, alias="MFA_State")
+
+    @property
+    def mfa_disabled_by_service(self) -> bool:
+        """True when Arlo says the account has no second factor to satisfy.
+
+        getFactorId and getFactors both answer 9306 "Mfa disabled by
+        service" in this state, so there is nothing to discover and no
+        browser-trust factor to mint — but the token above already works.
+        """
+        return self.mfa_state == MfaState.DISABLED
+
+
 class SecondFactor(BaseModel):
     """One MFA factor as returned by /api/getFactors or /api/startAuth.
 

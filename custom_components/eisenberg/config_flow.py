@@ -39,6 +39,7 @@ from .const import (
     DEFAULT_FFMPEG_STREAM,
     DEFAULT_MEDIA_RETENTION_DAYS,
     DOMAIN,
+    TRUST_COOKIE_PREFIX,
 )
 
 if TYPE_CHECKING:
@@ -76,13 +77,22 @@ def _media_dir_default(stored: str) -> str:
 
 
 def _serialize_cookies(cookie_jar: CookieJar) -> list[dict[str, str]]:
-    """Extract cookies from aiohttp CookieJar for persistence.
+    """Extract the browser trust cookie from a jar for persistence.
 
     Values are stored as-is (URL-encoded) — do NOT decode, because
     http.cookies will quote raw '=' characters, breaking Arlo's server.
+
+    Only TRUST_COOKIE_PREFIX cookies are kept. The coordinator has always
+    filtered on that prefix both when saving and when restoring; this
+    serializer did not, so a reauth persisted Arlo's transient session
+    cookies and replaced the trust cookie with them (#37). An empty result
+    means "no trust cookie here" and callers must not write it over a good
+    stored one.
     """
     cookies: list[dict[str, str]] = []
     for morsel in cookie_jar:
+        if not morsel.key.startswith(TRUST_COOKIE_PREFIX):
+            continue
         cookies.append(
             {
                 "name": morsel.key,
@@ -563,16 +573,20 @@ class EisenbergConfigFlow(ConfigFlow, domain=DOMAIN):
         cookies: list[dict[str, str]] = []
         if self._cookie_jar is not None:
             cookies = _serialize_cookies(self._cookie_jar)
-        return self.async_update_reload_and_abort(
-            entry,
-            data={
-                **entry.data,
-                CONF_USERNAME: self._username,
-                CONF_PASSWORD: self._password,
-                CONF_DEVICE_ID: self._device_id,
-                CONF_TRUST_COOKIE: cookies,
-            },
-        )
+        data = {
+            **entry.data,
+            CONF_USERNAME: self._username,
+            CONF_PASSWORD: self._password,
+            CONF_DEVICE_ID: self._device_id,
+        }
+        # Only overwrite the stored cookie when this login actually minted
+        # one. Arlo issues no browser-trust cookie while MFA is disabled
+        # service-side, so writing unconditionally threw away a perfectly
+        # good cookie on every reauth (#37) — the coordinator's _save_cookies
+        # has always guarded this the same way.
+        if cookies:
+            data[CONF_TRUST_COOKIE] = cookies
+        return self.async_update_reload_and_abort(entry, data=data)
 
     @staticmethod
     @callback

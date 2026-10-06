@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.1 — 2026-10-06
+
+### Fixed
+
+- **Reauthenticating no longer throws away the browser trust cookie (#37).**
+  The config flow's cookie serializer kept every cookie in the jar, not just
+  the `browser_trust_` one, and the reauth/reconfigure step wrote that list
+  over the stored cookie unconditionally. So a reauth persisted Arlo's
+  transient session cookies — `__cf_bm`, `AWSALB`, `AWSALBCORS`, `JSESSIONID`,
+  the exact ones the coordinator's restore code has always been careful to skip
+  — and lost the one cookie that matters.
+
+  Harmless while Arlo has MFA disabled service-side, because nothing issues a
+  trust cookie in that state and nothing needs one. It stops being harmless the
+  moment Arlo turns MFA back on: anyone who reauthenticated in between would
+  have faced a full factor challenge, having silently lost the cookie that
+  exists to prevent exactly that.
+
+  The serializer now keeps only trust cookies, and the reauth step leaves a
+  stored cookie alone when the new login minted none — the same guard the
+  coordinator's own save path has always had. The prefix those three places
+  agree on now lives in one constant instead of being spelled out at each site.
+
+  Found by driving the setup and reauth flows end to end against a live Home
+  Assistant rather than trusting that 0.5.0's login fix was the whole story.
+
 ## 0.5.0 — 2026-10-06
 
 ### Fixed

@@ -14,6 +14,7 @@ import base64
 import re
 from typing import TYPE_CHECKING
 
+import aiohttp
 import pytest
 from aioresponses import aioresponses
 
@@ -423,3 +424,60 @@ class TestMediaDirOptions:
 
         # stored "" -> form default (sentinel) -> submit -> stored "" again.
         assert _stored_media_dir(_media_dir_default("")) == ""
+
+
+class TestTrustCookiePersistence:
+    """Only the browser trust cookie belongs in the config entry (#37).
+
+    The coordinator has always filtered on the `browser_trust_` prefix when
+    saving and when restoring — its own comment names `__cf_bm`, `AWSALB` and
+    `JSESSIONID` as the transient cookies to skip. The config flow's
+    serializer never got the filter, so a reauth wrote all five of those into
+    the entry *and replaced the trust cookie with them*.
+
+    Latent while Arlo has MFA disabled service-side, because nothing issues a
+    browser-trust cookie in that state and nothing needs one. It stops being
+    latent the moment Arlo turns MFA back on: every user who reauthenticated
+    in between would face a full factor challenge, having silently lost the
+    cookie that exists to prevent exactly that.
+    """
+
+    @staticmethod
+    def _jar() -> CookieJar:
+        from yarl import URL
+
+        jar = aiohttp.CookieJar(unsafe=True)
+        jar.update_cookies(
+            {"browser_trust_USER-123": "the-real-trust-cookie"},
+            URL("https://ocapi-app.arlo.com/"),
+        )
+        for junk in ("__cf_bm", "AWSALB", "AWSALBCORS", "JSESSIONID"):
+            jar.update_cookies({junk: "transient"}, URL("https://myapi.arlo.com/"))
+        return jar
+
+    async def test_only_the_trust_cookie_is_serialized(self) -> None:
+        from custom_components.eisenberg.config_flow import _serialize_cookies
+
+        names = [c["name"] for c in _serialize_cookies(self._jar())]
+        assert names == ["browser_trust_USER-123"]
+
+    async def test_trust_cookie_value_survives_serialization(self) -> None:
+        from custom_components.eisenberg.config_flow import _serialize_cookies
+
+        (cookie,) = _serialize_cookies(self._jar())
+        assert cookie["value"] == "the-real-trust-cookie"
+        assert cookie["domain"] == "ocapi-app.arlo.com"
+
+    async def test_a_jar_with_no_trust_cookie_serializes_to_nothing(self) -> None:
+        """What Arlo hands back with MFA disabled: transient cookies only.
+
+        Serializing those as "the trust cookie" is what overwrote the real
+        one. Nothing to save must mean nothing to save.
+        """
+        from yarl import URL
+
+        from custom_components.eisenberg.config_flow import _serialize_cookies
+
+        jar = aiohttp.CookieJar(unsafe=True)
+        jar.update_cookies({"__cf_bm": "transient"}, URL("https://myapi.arlo.com/"))
+        assert _serialize_cookies(jar) == []

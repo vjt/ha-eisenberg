@@ -32,6 +32,7 @@ from .exceptions import (
 )
 from .models import (
     ActiveModeState,
+    AuthData,
     DeviceInfo,
     FactorType,
     LocationInfo,
@@ -334,11 +335,25 @@ class EisenbergClient:
         if meta["code"] != 200:
             raise AuthenticationError(f"Auth failed: {body['meta'].get('error', 'unknown')}")
 
-        auth_data = body["data"]
-        token = auth_data["token"]
-        self.user_id = auth_data["userId"]
+        auth = AuthData.model_validate(body["data"])
+        token = auth.token
+        self.user_id = auth.user_id
 
-        if auth_data.get("authCompleted"):
+        if auth.auth_completed:
+            self.token = token
+            self._token_issued_at = time.monotonic()
+            await self._establish_session()
+            return
+
+        # Arlo turned MFA off service-wide on 2026-10-06 (issue #37). It still
+        # answers authCompleted=false, but getFactorId and getFactors both
+        # return 9306 "Mfa disabled by service" — there is no factor to satisfy
+        # and no browser-trust factor to mint, so entering the MFA flow can only
+        # fail. The token issued above is already accepted by myapi, which
+        # _establish_session() proves or disproves on the spot: a token Arlo
+        # will not honour fails there, loudly, instead of being trusted blind.
+        if auth.mfa_disabled_by_service:
+            _LOGGER.info("Arlo reports MFA disabled service-side — using the issued token")
             self.token = token
             self._token_issued_at = time.monotonic()
             await self._establish_session()
@@ -406,7 +421,13 @@ class EisenbergClient:
                 "Arlo is rate-limiting requests. Wait a few hours and try again."
             )
         if meta["code"] != 200:
-            raise AuthenticationError(f"getFactors failed: {body['meta'].get('error')}")
+            # Quote Arlo's own message, not just the number. Three reporters
+            # filed "getFactors failed: 9306" within hours of each other and
+            # the code alone explained nothing; "Mfa disabled by service" did
+            # (issue #37).
+            raise AuthenticationError(
+                f"getFactors failed: {meta.get('error')} {meta.get('message', '')}".rstrip()
+            )
 
         items = body["data"].get("items", [])
         return [SecondFactor.model_validate(item) for item in items]
