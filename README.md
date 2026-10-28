@@ -29,9 +29,10 @@ Seven platforms. Per camera, unless noted.
 | Battery | `sensor` | Percentage, with the standard HA battery device class |
 | Signal strength | `sensor` | WiFi signal, in bars |
 | Siren | `switch` | On/off |
+| Camera | `switch` | Switch the camera itself on/off — Arlo's privacy mode, the same as the app's toggle. On cameras behind a base station it shows as *unknown* until the camera first reports its state, which can take a few minutes after HA starts |
 | Spotlight | `light` | On/off plus brightness — Arlo's 0–100 intensity mapped onto HA's 0–255 |
 | Snapshot | `button` | Request a fresh full-frame snapshot |
-| Security mode | `select` | armAway / armHome / standby. **One per location**, named after the location when you have more than one |
+| Security mode | `select` | armAway / armHome / standby plus your custom modes from the Arlo app, kept live as you add, rename or delete them. **One per location**, named after the location when you have more than one, and attached to a device in that location |
 
 Battery and signal work on cameras that report them directly *and* on
 cameras that keep them on a hub — see
