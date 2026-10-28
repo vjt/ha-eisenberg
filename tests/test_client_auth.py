@@ -159,6 +159,85 @@ class TestMfaDiscovery:
             requests = [k for k, _ in m.requests]
             assert all("/api/startAuth" not in str(req) for req in requests)
 
+    async def test_browser_entries_are_not_offered_as_factors(self) -> None:
+        """getFactors also lists trusted browsers (factorType BROWSER, #40).
+
+        They are records, not something a challenge can be sent to, so login()
+        must parse them and leave them out of the factor list.
+        """
+        browser = {
+            "factorId": "fid-browser",
+            "factorType": "BROWSER",
+            "displayName": "Chrome on Linux",
+            "factorRole": "SECONDARY",
+        }
+        payload = {
+            "data": {"items": [browser, *_TWO_FACTORS_PAYLOAD["data"]["items"]]},
+            "meta": {"code": 200},
+        }
+        with aioresponses() as m:
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                    },
+                    "meta": {"code": 200},
+                },
+            )
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+            )
+            m.get(GET_FACTORS_RE, payload=payload)
+
+            client = make_client()
+            async with client:
+                with pytest.raises(MfaRequired) as exc_info:
+                    await client.login()
+
+        assert [f.factor_id for f in exc_info.value.factors] == ["fid-push", "fid-email"]
+
+    async def test_only_browser_entries_is_an_auth_error(self) -> None:
+        """No factor left to challenge must fail loudly, not show an empty picker."""
+        payload = {
+            "data": {
+                "items": [
+                    {
+                        "factorId": "fid-browser",
+                        "factorType": "BROWSER",
+                        "displayName": "Chrome on Linux",
+                        "factorRole": "SECONDARY",
+                    }
+                ]
+            },
+            "meta": {"code": 200},
+        }
+        with aioresponses() as m:
+            m.post(
+                f"{OCAPI}/api/auth",
+                payload={
+                    "data": {
+                        "token": "initial-token",
+                        "userId": "USER-123",
+                        "authCompleted": False,
+                    },
+                    "meta": {"code": 200},
+                },
+            )
+            m.post(
+                f"{OCAPI}/api/getFactorId",
+                payload={"data": {}, "meta": {"code": 400, "error": "4012"}},
+            )
+            m.get(GET_FACTORS_RE, payload=payload)
+
+            client = make_client()
+            async with client:
+                with pytest.raises(AuthenticationError, match="no push, email or SMS"):
+                    await client.login()
+
 
 class TestMfaDisabledByService:
     """Arlo turned MFA off service-wide on 2026-10-06 (#37).

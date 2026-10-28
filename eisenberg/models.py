@@ -64,6 +64,9 @@ class FactorType(StrEnum):
     PUSH = "PUSH"
     EMAIL = "EMAIL"
     SMS = "SMS"
+    # A trusted browser getFactors lists alongside the real factors (#40).
+    # Nothing can be sent to it, so it is never offered as a challenge.
+    BROWSER = "BROWSER"
 
 
 class MfaState(StrEnum):

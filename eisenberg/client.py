@@ -452,7 +452,13 @@ class EisenbergClient:
             )
 
         items = body["data"].get("items", [])
-        return [SecondFactor.model_validate(item) for item in items]
+        factors = [SecondFactor.model_validate(item) for item in items]
+        challengeable = [f for f in factors if f.factor_type != FactorType.BROWSER]
+        if not challengeable:
+            raise AuthenticationError(
+                "getFactors returned no push, email or SMS factor to verify with"
+            )
+        return challengeable
 
     async def start_mfa(self, factor: SecondFactor) -> str:
         """Fire the MFA challenge for `factor`. Returns factorAuthCode.
