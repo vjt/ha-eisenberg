@@ -25,6 +25,7 @@ Seven platforms. Per camera, unless noted.
 | Camera | `camera` | Live RTSPS stream plus a tile backed by snapshots, motion thumbnails and stream keyframes, cached to disk so it survives restarts and stays populated while disarmed |
 | Motion | `binary_sensor` | Generic motion, from the MQTT `motionDetected` property |
 | Person / Vehicle / Animal detected | `binary_sensor` | Arlo's AI classification, one sensor per category, with a configurable reset timeout |
+| Contact | `binary_sensor` | **Per all-in-one sensor (MS1001)**: open/closed, from the sensor's own `contactState`. The sensor also gets a Battery |
 | Base station connectivity | `binary_sensor` | Whether the hub that gateways this camera is reachable — resolved by `parentId`, so it reports the camera's *own* hub on multi-hub accounts |
 | Battery | `sensor` | Percentage, with the standard HA battery device class |
 | Signal strength | `sensor` | WiFi signal, in bars |
@@ -264,10 +265,11 @@ and it's worth saying out loud.
 | Ultra (VMC5040) | Behind a VMB5000, same reports |
 | Pro-series cameras (VMC4030, VMC4060) | Behind hubs, in reporters' accounts |
 | Video Doorbell (FB1001A) | Publishes on a separate `doorbells` resource, handled |
+| All-in-One Sensor (MS1001) | Contact and battery; a user's captures showed where the contact state arrives |
 
 Device *types* are handled generically — `basestation`, `arlobridge` and
-`hub` are treated as gateways; `camera`, `doorbell` and `arloq` as
-cameras — so a model not listed here stands a good chance of working.
+`hub` are treated as gateways; `sensors` as all-in-one sensors;
+`camera`, `doorbell` and `arloq` as cameras — so a model not listed here stands a good chance of working.
 **If yours doesn't, file an issue with a debug log.** Every row in that
 table above the first one exists because somebody did.
 

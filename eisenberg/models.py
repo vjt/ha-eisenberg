@@ -147,6 +147,9 @@ class DeviceState(BaseModel):
     connection_state: str | None = Field(None, alias="connectionState")
     # Arlo's privacy mode: True means the camera is switched off (#39).
     privacy_active: bool | None = Field(None, alias="privacyActive")
+    # An all-in-one sensor's (MS1001) door/window contact: True means open,
+    # as in pyaarlo's ArloSensor.is_open.
+    contact_state: bool | None = Field(None, alias="contactState")
 
 
 class MediaMeta(BaseModel):
@@ -503,6 +506,9 @@ _BASE_STATION_DEVICE_TYPES: frozenset[str] = frozenset({"basestation", "arlobrid
 # Arlo deviceType of a video doorbell. Matched lowercased.
 _DOORBELL_DEVICE_TYPE = "doorbell"
 
+# Arlo deviceType of an all-in-one sensor (MS1001). Matched lowercased.
+_SENSOR_DEVICE_TYPE = "sensors"
+
 
 class DeviceInfo(BaseModel):
     """Device info from the devices list API."""
@@ -547,6 +553,12 @@ class DeviceInfo(BaseModel):
     def is_doorbell(self) -> bool:
         """True when Arlo classifies this device as a video doorbell."""
         return (self.device_type or "").lower() == _DOORBELL_DEVICE_TYPE
+
+    @property
+    def is_sensor(self) -> bool:
+        """True for an all-in-one sensor (MS1001): no camera, publishes its
+        contact and battery state as resource `sensors/<id>`."""
+        return (self.device_type or "").lower() == _SENSOR_DEVICE_TYPE
 
     @property
     def camera_resource_filter(self) -> str:

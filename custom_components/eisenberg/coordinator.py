@@ -213,8 +213,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stations. Bases stay in `devices` (they gateway locations/connectivity
         and each carries an MQTT subscription) but must never become cameras:
         a base has no stream/snapshot, so its camera entity fails every
-        startStream (issue #24, DirkWeber1972's VMB4000)."""
-        return [d for d in self._devices if not d.is_base_station]
+        startStream (issue #24, DirkWeber1972's VMB4000). All-in-one sensors
+        are not cameras either; they live in `contact_sensors`."""
+        return [d for d in self._devices if not d.is_base_station and not d.is_sensor]
+
+    @property
+    def contact_sensors(self) -> list[DeviceInfo]:
+        """All-in-one sensors (MS1001): a contact sensor and a battery each."""
+        return [d for d in self._devices if d.is_sensor]
 
     def _mqtt_extra_topics(self) -> list[str]:
         """Union of every device's declared allowedMqttTopics, order-stable.
@@ -615,8 +621,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _sse_gap_resources(self, outcome: SubscribeOutcome) -> dict[str, str]:
         """Device resources no granted MQTT filter delivers, → their xCloudId.
 
-        A device publishes its state as `cameras/<id>`, and a doorbell also
-        as `doorbells/<id>`. On accounts whose broker refuses the
+        A device publishes its state as `cameras/<id>`, a doorbell also
+        as `doorbells/<id>`, an all-in-one sensor as `sensors/<id>`. On
+        accounts whose broker refuses the
         `d/{xCloudId}/out/#` wildcard, a resource missing from the device's
         allowedMqttTopics reaches nobody: the Gen2 doorbell's instant motion
         on `cameras/<id>` (issue #38). Those are the resources the SSE
@@ -632,6 +639,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 topic = f"d/{device.x_cloud_id}/out/{resource}/is"
                 if not any(topic_matches(f, topic) for f in granted):
                     gap[resource] = device.x_cloud_id
+        for device in self.contact_sensors:
+            resource = f"sensors/{device.device_id}"
+            topic = f"d/{device.x_cloud_id}/out/{resource}/is"
+            if not any(topic_matches(f, topic) for f in granted):
+                gap[resource] = device.x_cloud_id
         return gap
 
     def _set_sse_resources(self, resources: dict[str, str]) -> None:
@@ -978,6 +990,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ("d/+/out/doorbells/+/lastImageSnapshotAvailable", self._handle_last_image_snapshot)
         )
 
+        # All-in-one sensor (MS1001) state: contactState, batteryLevel.
+        routes.append(("d/+/out/sensors/+/is", self._handle_sensor_state))
+
         # Siren state
         routes.append(("d/+/out/siren/+/is", self._handle_siren))
 
@@ -1015,6 +1030,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Geofence configuration push — informational only, just absorb
         # the topic so it doesn't show up as Unhandled.
         routes.append(("u/+/in/automation/geofences/is", self._handle_geofences))
+
+        # Which sensors would hold up each mode, i.e. which are open. The
+        # same open/close arrives first-hand on `sensors/<id>`; absorb it.
+        routes.append(("u/+/in/automation/exceptionSensors/is", self._handle_exception_sensors))
 
         return routes
 
@@ -1327,6 +1346,23 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Handle connectivity updates."""
         _LOGGER.debug("Connectivity update: %s", json.dumps(payload)[:200])
 
+    async def _handle_sensor_state(self, topic: str, payload: dict[str, Any]) -> None:
+        """Handle an all-in-one sensor's state: d/{xCloudId}/out/sensors/{id}/is."""
+        device_id = topic.split("/")[4]
+        properties = payload.get("properties", {})
+        try:
+            state = DeviceState.model_validate(properties)
+        except Exception:
+            _LOGGER.warning(
+                "Failed to parse sensor state for %s: %s",
+                device_id,
+                json.dumps(payload)[:500],
+            )
+            return
+        self._merge_device_state(device_id, state)
+        _LOGGER.debug("Sensor %s state: contact=%s", device_id, state.contact_state)
+        self._push_to_entities()
+
     async def _handle_devices_response(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle a base station's answer to `{action: get, resource: devices}`.
 
@@ -1571,6 +1607,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _handle_geofences(self, topic: str, payload: dict[str, Any]) -> None:
         """Geofence config push from the Arlo app — informational only."""
         _LOGGER.debug("Geofence update on %s", topic)
+
+    async def _handle_exception_sensors(self, topic: str, payload: dict[str, Any]) -> None:
+        """Open sensors per mode — redundant with `sensors/<id>`, logged only."""
+        _LOGGER.debug("Exception sensors update: %s", json.dumps(payload)[:500])
 
     async def _handle_basestation(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle base station heartbeat / state.

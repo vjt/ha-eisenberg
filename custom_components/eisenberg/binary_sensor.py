@@ -3,6 +3,7 @@
 Motion detected: from MQTT motionDetected property (resets via MQTT).
 Person/Vehicle/Animal: from AI classification in feed/live events
 (auto-resets after configurable timeout since MQTT only resets generic motion).
+Contact: an all-in-one sensor's (MS1001) contactState, on when open.
 """
 
 from __future__ import annotations
@@ -34,7 +35,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up Eisenberg binary sensors."""
     coordinator: EisenbergCoordinator = entry.runtime_data
+    async_add_entities(build_binary_sensors(coordinator, entry))
 
+
+def build_binary_sensors(
+    coordinator: EisenbergCoordinator, entry: ConfigEntry
+) -> list[BinarySensorEntity]:
+    """Motion, AI detection and connectivity per camera; a contact sensor per
+    all-in-one sensor (MS1001)."""
     entities: list[BinarySensorEntity] = []
     for device in coordinator.cameras:
         entities.append(MotionSensor(coordinator, device))
@@ -42,8 +50,8 @@ async def async_setup_entry(
         entities.append(DetectionSensor(coordinator, device, "Vehicle", entry))
         entities.append(DetectionSensor(coordinator, device, "Animal", entry))
         entities.append(BasestationConnectivity(coordinator, device))
-
-    async_add_entities(entities)
+    entities.extend(ContactSensor(coordinator, d) for d in coordinator.contact_sensors)
+    return entities
 
 
 class MotionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
@@ -149,6 +157,46 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
             self.async_write_ha_state()
 
         self._reset_task = self.hass.async_create_task(_reset())
+
+
+class ContactSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
+    """Door/window contact of an all-in-one sensor (MS1001): on when open.
+
+    No camera entity exists for this device, so this one registers it.
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.OPENING
+    _attr_name = None
+
+    def __init__(
+        self,
+        coordinator: EisenbergCoordinator,
+        device: DeviceInfo,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_contact"
+        self._attr_device_info = {
+            "identifiers": {("eisenberg", device.device_id)},
+            "name": device.device_name,
+            "manufacturer": "Arlo",
+            "model": device.model_id,
+        }
+        self._attr_is_on = self._is_open()
+
+    def _is_open(self) -> bool | None:
+        state = self.coordinator.device_states.get(self._device.device_id)
+        if state is not None and state.contact_state is not None:
+            return state.contact_state
+        # Nothing reported yet: the device list read at startup may have it.
+        contact = (self._device.properties or {}).get("contactState")
+        return contact if isinstance(contact, bool) else None
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._attr_is_on = self._is_open()
+        self.async_write_ha_state()
 
 
 class BasestationConnectivity(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
