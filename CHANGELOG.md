@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0 — 2026-11-04
+
+### Added
+
+- **Arlo All-in-One Sensors (MS1001) as contact sensors.** Each one gets a
+  Contact binary sensor (on when open) and a Battery sensor, fed by the
+  sensor's own `contactState`, over MQTT or Arlo's event stream, whichever
+  delivers it on your account.
+
+### Fixed
+
+- **MS1001 sensors no longer show up as cameras.** They used to get stream,
+  motion, AI detection, siren and camera switch entities that could never
+  work. Those entities are gone after updating; remove them if HA keeps them
+  as unavailable.
+
 ## 0.6.3 — 2026-10-28
 
 ### Fixed
