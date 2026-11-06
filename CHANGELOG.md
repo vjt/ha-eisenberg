@@ -19,6 +19,13 @@ library is unchanged and stays at 0.7.0 on PyPI.
 - **Integration category** `security_safety.cameras` in `manifest.json`, used by
   the Marketplace catalog.
 
+### Removed
+
+- **Unused state translations for the security mode select.** No entity
+  pointed at them (the select has no translation key), and their camelCase
+  keys (`armAway`, `armHome`) fail hassfest. The select shows the same states
+  as before.
+
 ## 0.7.0 — 2026-11-04
 
 ### Added

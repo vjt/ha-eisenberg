@@ -80,17 +80,6 @@
       "reconfigure_successful": "Reconfiguration completed."
     }
   },
-  "entity": {
-    "select": {
-      "security_mode": {
-        "state": {
-          "armAway": "Armed Away",
-          "armHome": "Armed Home",
-          "standby": "Standby"
-        }
-      }
-    }
-  },
   "options": {
     "step": {
       "init": {
