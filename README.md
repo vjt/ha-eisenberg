@@ -53,6 +53,12 @@ cameras that keep them on a hub — see
   surfaces an auth failure as a proper HA reauth flow instead of going
   quietly deaf, and keeps your trust cookie across it.
 
+Want to record clips from the live stream on your own schedule,
+without an Arlo subscription? Tor Seldén's
+[eisenberg_clip](https://github.com/torselden/eisenberg_clip) is a
+companion component that does exactly that on top of Eisenberg, with
+ffmpeg.
+
 ## Base stations and SmartHubs
 
 Base-stationed accounts went from unusable to working across 0.3.14–0.4.0
