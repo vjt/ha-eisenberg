@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.2 — 2026-11-06
+
+Version alignment only: no change to the integration's behaviour. The
+`pyeisenberg` library is published at 0.7.2 and the integration now requires
+it, so the library, the integration and the release all carry the same
+version again.
+
 ## 0.7.1 — 2026-11-06
 
 Packaging only: no change to the integration's behaviour. The `pyeisenberg`
