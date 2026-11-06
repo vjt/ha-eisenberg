@@ -1,6 +1,7 @@
 {
   "domain": "eisenberg",
   "name": "Eisenberg (Arlo)",
+  "categories": ["security_safety.cameras"],
   "codeowners": ["@vjt"],
   "config_flow": true,
   "dependencies": ["media_source"],
@@ -10,5 +11,5 @@
   "issue_tracker": "https://github.com/vjt/ha-eisenberg/issues",
   "loggers": ["eisenberg"],
   "requirements": ["pyeisenberg>=0.7.0"],
-  "version": "0.7.0"
+  "version": "0.7.1"
 }
