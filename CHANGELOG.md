@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.1 — 2026-11-06
+
+Packaging only: no change to the integration's behaviour. The `pyeisenberg`
+library is unchanged and stays at 0.7.0 on PyPI.
+
+### Added
+
+- **HACS and hassfest validation workflows** (`.github/workflows/validate.yaml`,
+  `.github/workflows/hassfest.yaml`), run on every push, pull request and
+  nightly, as required for the HACS default repository list (the catalog the
+  Home Assistant Marketplace reads).
+- **Integration category** `security_safety.cameras` in `manifest.json`, used by
+  the Marketplace catalog.
+
+### Removed
+
+- **Unused state translations for the security mode select.** No entity
+  pointed at them (the select has no translation key), and their camelCase
+  keys (`armAway`, `armHome`) fail hassfest. The select shows the same states
+  as before.
+
 ## 0.7.0 — 2026-11-04
 
 ### Added
