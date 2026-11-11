@@ -169,8 +169,13 @@ class EisenbergCamera(CoordinatorEntity[EisenbergCoordinator], Camera):
             async with aiohttp.ClientSession() as session, session.get(url) as resp:
                 if resp.status == 200:
                     return await resp.read()
-        except Exception:
-            _LOGGER.debug("Failed to fetch camera image from %s", url)
+        except Exception as err:
+            # Never the URL: it is presigned, and logs end up in bug reports.
+            _LOGGER.debug(
+                "Failed to fetch camera image for %s: %s",
+                self._device.device_id,
+                type(err).__name__,
+            )
 
         return None
 

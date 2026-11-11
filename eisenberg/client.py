@@ -40,6 +40,7 @@ from .models import (
     StreamResponse,
     custom_mode_labels,
 )
+from .redact import loggable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -728,7 +729,7 @@ class EisenbergClient:
         ) as resp:
             body = await _read_arlo_json(resp)
 
-        _LOGGER.debug("start_stream response: %s", body)
+        _LOGGER.debug("start_stream response: %s", loggable(body, 1000))
 
         if not body.get("success"):
             _raise_for_arlo_error(body, "start_stream")

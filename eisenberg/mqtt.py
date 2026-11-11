@@ -28,6 +28,7 @@ from .mqtt_codec import (
     split_packets,
     take_packet,
 )
+from .redact import loggable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -364,7 +365,7 @@ class MQTTEventStream:
                 _LOGGER.info(
                     "Unhandled MQTT topic %s: %s",
                     parsed.topic,
-                    json.dumps(payload)[:500],
+                    loggable(payload, 500),
                 )
         elif pkt_type == PINGRESP:
             pass  # Expected keepalive response

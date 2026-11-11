@@ -201,10 +201,22 @@ target:
 
 ## Events
 
-The integration fires `eisenberg_media` events on motion detection
-with `device_id`, `category`, `categories`, `content_url`,
-`thumbnail_url`, `duration`, `timestamp`. Use these in automations to
-log clips elsewhere or trigger downstream actions.
+The integration fires an `eisenberg_media` event on every motion
+detection, for your own automations:
+
+| Field | Content |
+|-------|---------|
+| `device_id`, `type` | The Arlo device, and `motion` |
+| `category`, `categories` | Arlo's AI classification (`Person`, `Vehicle`, …) |
+| `duration`, `timestamp` | Clip length, and Arlo's event time in epoch ms |
+| `content_file`, `thumbnail_file` | Path of the archived clip and thumbnail |
+| `content_media_id`, `thumbnail_media_id` | Their media source ids (`media-source://media_source/…`) |
+
+The last four are filled in only when media archival is on and the
+download succeeded; otherwise they are `null`. The event never carries
+Arlo's own links to the media: those are presigned, so anyone holding
+one can fetch the recording without credentials, and every event is
+stored in the recorder database.
 
 ## Architecture
 

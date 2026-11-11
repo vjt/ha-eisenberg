@@ -22,6 +22,8 @@ from typing import Any
 
 import aiohttp
 
+from .redact import loggable
+
 _LOGGER = logging.getLogger(__name__)
 
 # Handler type: async callback(payload_dict)
@@ -155,14 +157,14 @@ class SSEEventStream:
                     return True
                 for data in parser.feed(chunk):
                     delivered = True
-                    _LOGGER.debug("SSE frame: %s", data[:500])
                     try:
                         payload = json.loads(data)
                     except json.JSONDecodeError:
                         _LOGGER.warning("Non-JSON SSE frame: %s", data[:200])
                         continue
+                    _LOGGER.debug("SSE frame: %s", loggable(payload, 500))
                     if not isinstance(payload, dict):
-                        _LOGGER.warning("Non-object SSE frame: %s", data[:200])
+                        _LOGGER.warning("Non-object SSE frame: %s", loggable(payload, 200))
                         continue
                     frame: dict[str, Any] = payload  # pyright: ignore[reportUnknownVariableType]
                     if frame.get("status") == "connected":
@@ -179,7 +181,7 @@ class SSEEventStream:
                     try:
                         await self._on_event(frame)
                     except Exception:
-                        _LOGGER.exception("Error in SSE handler for %s", data[:200])
+                        _LOGGER.exception("Error in SSE handler for %s", loggable(frame, 200))
             _LOGGER.debug("SSE event stream ended by server; reconnecting")
             return delivered
         finally:

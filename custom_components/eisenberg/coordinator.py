@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 from datetime import timedelta
@@ -58,6 +57,7 @@ from eisenberg.models import (
     custom_mode_labels,
 )
 from eisenberg.mqtt import EventHandler, TopicRouter, topic_matches
+from eisenberg.redact import loggable
 
 from .const import (
     CONF_DEVICE_ID,
@@ -394,8 +394,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     len(self.image_bytes[device_id]),
                     device_id,
                 )
-        except Exception:
-            _LOGGER.debug("Image cache fetch failed for %s", device_id, exc_info=True)
+        except Exception as err:
+            # No traceback: the exception may quote the presigned URL.
+            _LOGGER.debug("Image cache fetch failed for %s: %s", device_id, type(err).__name__)
 
     def _push_to_entities(self) -> None:
         """Publish MQTT-driven state to the entities, without deferring the tick.
@@ -704,7 +705,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.debug("SSE recv topic=%s", topic)
         handlers = self._sse_router.match(topic)
         if not handlers:
-            _LOGGER.info("Unhandled SSE topic %s: %s", topic, json.dumps(payload)[:500])
+            _LOGGER.info("Unhandled SSE topic %s: %s", topic, loggable(payload, 500))
             return
         for handler in handlers:
             result = handler(topic, payload)
@@ -865,7 +866,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug(
                 "  device %s properties=%s",
                 device.device_id,
-                json.dumps(device.properties or {})[:4000],
+                loggable(device.properties or {}, 4000),
             )
         bases = [d for d in self._devices if d.is_base_station]
         if bases:
@@ -1105,7 +1106,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 device_id,
                 state.motion_detected,
                 state.activity_state,
-                json.dumps(properties)[:4000],
+                loggable(properties, 4000),
             )
             raw_spot: Any = (
                 cast("dict[str, Any]", properties).get("spotlight")
@@ -1126,7 +1127,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.warning(
                         "Failed to parse spotlight for %s: %s",
                         device_id,
-                        json.dumps(spotlight_raw)[:200],
+                        loggable(spotlight_raw, 200),
                     )
             # Surface Arlo's "Invalid camera activity state change" error
             # once at INFO so it's clear why disarmed snapshots are silent.
@@ -1139,7 +1140,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning(
                 "Failed to parse camera state for %s: %s",
                 device_id,
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _store_snapshot(self, device_id: str, url: str) -> None:
@@ -1173,7 +1174,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning(
                 "Failed to parse snapshot for %s: %s",
                 device_id,
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _handle_last_image_snapshot(self, topic: str, payload: dict[str, Any]) -> None:
@@ -1192,7 +1193,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning(
                 "Failed to parse last-image snapshot for %s: %s",
                 device_id,
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _handle_siren(self, topic: str, payload: dict[str, Any]) -> None:
@@ -1212,7 +1213,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning(
                 "Failed to parse siren for %s: %s",
                 device_id,
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _handle_feed(self, topic: str, payload: dict[str, Any]) -> None:
@@ -1230,8 +1231,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
                 # Archive media
+                clip: Path | None = None
+                thumbnail: Path | None = None
                 if event.content_url:
-                    await self._archive_media(
+                    clip = await self._archive_media(
                         event.device_id,
                         event.content_url,
                         f"motion_{(event.obj_category or 'unknown').lower()}",
@@ -1239,7 +1242,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 if event.thumbnail_url:
                     await self._cache_image_bytes(event.device_id, event.thumbnail_url)
-                    await self._archive_media(
+                    thumbnail = await self._archive_media(
                         event.device_id,
                         event.thumbnail_url,
                         f"motion_{(event.obj_category or 'unknown').lower()}_thumb",
@@ -1247,7 +1250,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     self.latest_thumbnails[event.device_id] = event.thumbnail_url
 
-                # Fire HA event
+                # Fire HA event. Arlo's links are presigned: anyone holding
+                # one fetches the clip without credentials, and every event
+                # lands in the recorder database. Only the archived copies
+                # are named here.
                 self.hass.bus.async_fire(
                     EVENT_MEDIA,
                     {
@@ -1255,10 +1261,12 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "type": "motion",
                         "category": event.obj_category,
                         "categories": event.obj_categories,
-                        "content_url": event.content_url,
-                        "thumbnail_url": event.thumbnail_url,
                         "duration": event.duration,
                         "timestamp": event.utc_created_date,
+                        "content_file": str(clip) if clip else None,
+                        "content_media_id": self._media_source_id(clip),
+                        "thumbnail_file": str(thumbnail) if thumbnail else None,
+                        "thumbnail_media_id": self._media_source_id(thumbnail),
                     },
                 )
 
@@ -1266,7 +1274,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 _LOGGER.warning(
                     "Failed to parse motion event: %s",
-                    json.dumps(payload)[:500],
+                    loggable(payload, 500),
                 )
 
         elif feed_type == "modeChange":
@@ -1284,13 +1292,13 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 _LOGGER.warning(
                     "Failed to parse mode change: %s",
-                    json.dumps(payload)[:500],
+                    loggable(payload, 500),
                 )
         else:
             _LOGGER.info(
                 "Unknown feed type '%s': %s",
                 feed_type,
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _handle_media_upload(self, topic: str, payload: dict[str, Any]) -> None:
@@ -1305,7 +1313,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             _LOGGER.warning(
                 "Failed to parse media upload: %s",
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _handle_active_mode(self, topic: str, payload: dict[str, Any]) -> None:
@@ -1324,7 +1332,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             _LOGGER.warning(
                 "Failed to parse active mode: %s",
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
 
     async def _handle_custom_modes(self, topic: str, payload: dict[str, Any]) -> None:
@@ -1337,14 +1345,14 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             location.custom_modes = custom_mode_labels(payload["properties"]["properties"])
         except Exception:
-            _LOGGER.warning("Failed to parse custom modes: %s", json.dumps(payload)[:500])
+            _LOGGER.warning("Failed to parse custom modes: %s", loggable(payload, 500))
             return
         _LOGGER.debug("Custom modes for %s: %s", location_id, location.custom_modes)
         self._push_to_entities()
 
     async def _handle_connectivity(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle connectivity updates."""
-        _LOGGER.debug("Connectivity update: %s", json.dumps(payload)[:200])
+        _LOGGER.debug("Connectivity update: %s", loggable(payload, 200))
 
     async def _handle_sensor_state(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle an all-in-one sensor's state: d/{xCloudId}/out/sensors/{id}/is."""
@@ -1356,7 +1364,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning(
                 "Failed to parse sensor state for %s: %s",
                 device_id,
-                json.dumps(payload)[:500],
+                loggable(payload, 500),
             )
             return
         self._merge_device_state(device_id, state)
@@ -1385,7 +1393,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning(
                     "Base station reported a non-object state block for %s: %s",
                     device_id,
-                    json.dumps(props)[:200],
+                    loggable(props, 200),
                 )
                 continue
             try:
@@ -1394,7 +1402,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning(
                     "Failed to parse base station state for %s: %s",
                     device_id,
-                    json.dumps(cast("dict[str, Any]", props))[:300],
+                    loggable(cast("dict[str, Any]", props), 300),
                 )
                 continue
             self._merge_device_state(device_id, state)
@@ -1452,7 +1460,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning(
                     "Failed to parse device properties for %s: %s",
                     device.device_id,
-                    json.dumps(props)[:300],
+                    loggable(props, 300),
                 )
                 continue
             if self._merge_device_state(device.device_id, state):
@@ -1610,7 +1618,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _handle_exception_sensors(self, topic: str, payload: dict[str, Any]) -> None:
         """Open sensors per mode — redundant with `sensors/<id>`, logged only."""
-        _LOGGER.debug("Exception sensors update: %s", json.dumps(payload)[:500])
+        _LOGGER.debug("Exception sensors update: %s", loggable(payload, 500))
 
     async def _handle_basestation(self, topic: str, payload: dict[str, Any]) -> None:
         """Handle base station heartbeat / state.
@@ -1629,7 +1637,7 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception:
             _LOGGER.warning(
                 "Failed to parse basestation state: %s",
-                json.dumps(payload)[:300],
+                loggable(payload, 300),
             )
             return
         if state.connection_state is None:
@@ -1748,11 +1756,15 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         url: str,
         media_type: str,
         ext: str,
-    ) -> None:
-        """Download and archive media to configured storage."""
+    ) -> Path | None:
+        """Download media to configured storage; the archived file, or None.
+
+        The URL is presigned, so neither it nor an exception that may quote it
+        is logged: only the device and the media type.
+        """
         media_path = self.media_path
         if media_path is None:
-            return
+            return None
 
         from datetime import UTC, datetime
 
@@ -1770,20 +1782,39 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             if self._http_session is None:
-                return
+                return None
             async with self._http_session.get(url) as resp:
-                if resp.status == 200:
-                    content = await resp.read()
+                if resp.status != 200:
+                    _LOGGER.warning(
+                        "Failed to download %s for %s: HTTP %d",
+                        media_type,
+                        device_id,
+                        resp.status,
+                    )
+                    return None
+                content = await resp.read()
 
-                    def _write() -> None:
-                        filepath.write_bytes(content)
+                def _write() -> None:
+                    filepath.write_bytes(content)
 
-                    await self.hass.async_add_executor_job(_write)
-                    _LOGGER.debug("Archived %s to %s", media_type, filepath)
-                else:
-                    _LOGGER.warning("Failed to download %s: HTTP %d", url, resp.status)
-        except Exception:
-            _LOGGER.exception("Error archiving media %s", url)
+                await self.hass.async_add_executor_job(_write)
+                _LOGGER.debug("Archived %s to %s", media_type, filepath)
+                return filepath
+        except Exception as err:
+            _LOGGER.warning(
+                "Error archiving %s for %s: %s",
+                media_type,
+                device_id,
+                type(err).__name__,
+            )
+            return None
+
+    def _media_source_id(self, path: Path | None) -> str | None:
+        """Media source id of an archived file, for players and notifications."""
+        if path is None or not self.media_dir:
+            return None
+        root = Path(self.hass.config.media_dirs[self.media_dir])
+        return f"media-source://media_source/{self.media_dir}/{path.relative_to(root)}"
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Periodic health check: token refresh, MQTT reconnect, device sync.
