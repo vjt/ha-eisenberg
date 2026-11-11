@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0 — 2026-11-11
+
+### Changed
+
+- **Breaking: the `eisenberg_media` event no longer carries `content_url` and
+  `thumbnail_url`.** They were Arlo's presigned links: anyone holding one could
+  fetch the recording without credentials until it expired, and every event is
+  stored in the recorder database. The event now names the archived copies
+  instead: `content_file` and `thumbnail_file` (paths), `content_media_id` and
+  `thumbnail_media_id` (media source ids), all `null` when archival is off or
+  the download failed. `device_id`, `category`, `categories`, `duration` and
+  `timestamp` are unchanged. Automations that read the old fields need
+  updating. Raised in the HACS review (hacs/default#13515).
+
+### Security
+
+- **No Arlo media or stream link reaches the log any more.** A failed archive
+  download, a failed camera image fetch and every logged MQTT, SSE or
+  `start_stream` payload used to print the presigned URL; they now log the
+  device and the media type, and payload dumps show `<redacted>` in place of
+  every link. Logs are shared in bug reports.
+
 ## 0.7.2 — 2026-11-06
 
 Version alignment only: no change to the integration's behaviour. The

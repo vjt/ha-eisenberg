@@ -10,6 +10,6 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/vjt/ha-eisenberg/issues",
   "loggers": ["eisenberg"],
-  "requirements": ["pyeisenberg>=0.7.2"],
-  "version": "0.7.2"
+  "requirements": ["pyeisenberg>=0.8.0"],
+  "version": "0.8.0"
 }
