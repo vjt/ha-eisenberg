@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.1 — 2026-11-17
+
+### Fixed
+
+- **VMB4000 base stations listed by Arlo only as their siren** (`deviceType:
+  "siren"`, modelId `VMB4000-siren`) are recognised as base stations again.
+  They used to become a camera of their own, were never registered with, and
+  sent nothing: no snapshots, battery or signal for the cameras behind them.
+  Any `VMB` model is now a base station whatever its device type (#42).
+- **Battery, signal and camera on/off behind a VMB4000.** The base's
+  `devices` reply nests each device's values under `properties`; both the
+  nested and the flat shape are read now (#42).
+- "Base station reported state for N device(s)" counts only the devices
+  whose state was actually stored.
+
 ## 0.8.0 — 2026-11-11
 
 ### Changed
