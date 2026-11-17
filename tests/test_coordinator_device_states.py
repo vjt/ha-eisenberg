@@ -177,6 +177,45 @@ class TestDevicesResponseHandler:
         assert rec.coord.device_states[CAM_B].battery_level == 42
         assert CAM_A not in rec.coord.device_states
 
+    async def test_nested_property_blocks_land(self) -> None:
+        """Issue #42 (VMB4000 + VMC4030): each device's values are nested
+        under `properties`, beside a `states` block. pyaarlo reads both shapes
+        (super.py: `event.get("properties", event)`)."""
+        rec = _RecordingCoordinator()
+        await rec.coord._handle_devices_response(
+            DEVICES_TOPIC,
+            _payload(
+                {
+                    CAM_A: {
+                        "properties": {"batteryLevel": 48, "signalStrength": 2},
+                        "states": {"activeMode": "armHome"},
+                    },
+                    BASE: {
+                        "properties": {"connectionState": "available"},
+                        "states": {"activeMode": "armHome"},
+                    },
+                }
+            ),
+        )
+        assert rec.coord.device_states[CAM_A].battery_level == 48
+        assert rec.coord.device_states[CAM_A].signal_strength == 2
+        assert rec.coord.basestation_connection[BASE] == "available"
+        assert rec.pushes == 1
+
+    async def test_blocks_carrying_nothing_are_not_counted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A block with no field we know stores nothing, so it must not be
+        reported as state received (#42 logged "6 device(s)" for nothing)."""
+        caplog.set_level(logging.INFO)
+        rec = _RecordingCoordinator()
+        await rec.coord._handle_devices_response(
+            DEVICES_TOPIC, _payload({CAM_A: {"states": {"activeMode": "armHome"}}})
+        )
+        assert rec.coord.device_states == {}
+        assert rec.pushes == 0
+        assert "Base station reported state" not in caplog.text
+
     async def test_empty_devices_block_pushes_nothing(self) -> None:
         rec = _RecordingCoordinator()
         await rec.coord._handle_devices_response(DEVICES_TOPIC, _payload({}))

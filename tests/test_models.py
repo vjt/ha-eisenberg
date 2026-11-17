@@ -390,16 +390,33 @@ class TestIsBaseStation:
     """
 
     @staticmethod
-    def _dev(device_type: str | None) -> DeviceInfo:
+    def _model(device_type: str | None, model_id: str) -> DeviceInfo:
         raw: dict[str, object] = {
             "deviceId": "D",
             "deviceName": "n",
-            "modelId": "M",
+            "modelId": model_id,
             "xCloudId": "C",
         }
         if device_type is not None:
             raw["deviceType"] = device_type
         return DeviceInfo.model_validate(raw)
+
+    @classmethod
+    def _dev(cls, device_type: str | None) -> DeviceInfo:
+        return cls._model(device_type, "M")
+
+    def test_vmb_listed_only_as_its_siren_is_base(self) -> None:
+        # Issue #42: a VMB4000 that Arlo lists only as `deviceType: "siren"`,
+        # `modelId: "VMB4000-siren"`, with every camera naming it as parent.
+        assert self._model("siren", "VMB4000-siren").is_base_station is True
+
+    def test_vmb_model_is_base_whatever_its_type(self) -> None:
+        assert self._model(None, "VMB5000").is_base_station is True
+        assert self._model("camera", "vmb4540").is_base_station is True
+
+    def test_camera_models_are_not_base(self) -> None:
+        assert self._model("camera", "VMC4030").is_base_station is False
+        assert self._model("camera", "VML4030").is_base_station is False
 
     def test_basestation_is_base(self) -> None:
         assert self._dev("basestation").is_base_station is True

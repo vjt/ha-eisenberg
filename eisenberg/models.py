@@ -503,6 +503,12 @@ class StreamResponse(BaseModel):
 # doorbells, all-in-one arloq units) is camera-capable. Matched lowercased.
 _BASE_STATION_DEVICE_TYPES: frozenset[str] = frozenset({"basestation", "arlobridge", "hub"})
 
+# Arlo base-station model prefix (VMB3010, VMB4000, VMB4540, VMB5000, …). Some
+# accounts list a VMB4000 only as its siren — `deviceType: "siren"`, modelId
+# "VMB4000-siren" — so the model is the one thing that still names it a base
+# (issue #42). Matched uppercased.
+_BASE_STATION_MODEL_PREFIX = "VMB"
+
 # Arlo deviceType of a video doorbell. Matched lowercased.
 _DOORBELL_DEVICE_TYPE = "doorbell"
 
@@ -545,9 +551,12 @@ class DeviceInfo(BaseModel):
         A base gateways cameras but has no camera stream/snapshot of its own,
         so enumerating it as a camera yields a bogus entity whose startStream
         always fails (issue #24). Absent deviceType → treated as a camera: never
-        drop a real camera just because Arlo omitted the field.
+        drop a real camera just because Arlo omitted the field. A VMB model is
+        a base whatever its deviceType (issue #42).
         """
-        return (self.device_type or "").lower() in _BASE_STATION_DEVICE_TYPES
+        return (self.device_type or "").lower() in _BASE_STATION_DEVICE_TYPES or (
+            self.model_id.upper().startswith(_BASE_STATION_MODEL_PREFIX)
+        )
 
     @property
     def is_doorbell(self) -> bool:

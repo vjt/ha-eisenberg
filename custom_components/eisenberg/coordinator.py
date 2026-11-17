@@ -1375,7 +1375,10 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Handle a base station's answer to `{action: get, resource: devices}`.
 
         Shape: `{"resource": "devices", "devices": {deviceId: {props}}}` —
-        one property block per gatewayed device. For cameras behind an
+        one property block per gatewayed device, either flat or nested as
+        `{"properties": {props}, "states": {...}}` (VMB4000, issue #42);
+        pyaarlo reads both (super.py `event.get("properties", event)`).
+        For cameras behind an
         old-style base station this is the ONLY way battery, signal strength
         and connectionState ever arrive: the hub never pushes them
         unsolicited (issue #27). pyaarlo dispatches the same shape in
@@ -1388,30 +1391,32 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         updated = 0
-        for device_id, props in cast("dict[str, Any]", raw_devices).items():
-            if not isinstance(props, dict):
+        for device_id, block in cast("dict[str, Any]", raw_devices).items():
+            if not isinstance(block, dict):
                 _LOGGER.warning(
                     "Base station reported a non-object state block for %s: %s",
                     device_id,
-                    loggable(props, 200),
+                    loggable(block, 200),
                 )
                 continue
+            props: Any = cast("dict[str, Any]", block).get("properties", block)
             try:
                 state = DeviceState.model_validate(props)
             except Exception:
                 _LOGGER.warning(
                     "Failed to parse base station state for %s: %s",
                     device_id,
-                    loggable(cast("dict[str, Any]", props), 300),
+                    loggable(block, 300),
                 )
                 continue
-            self._merge_device_state(device_id, state)
+            merged = self._merge_device_state(device_id, state)
             # Keyed by the device the block describes, so the base's own
             # entry lands under the gateway id the connectivity sensor
             # resolves against (parentId, per #14).
             if state.connection_state is not None:
                 self.basestation_connection[device_id] = state.connection_state
-            updated += 1
+            if merged:
+                updated += 1
 
         if updated:
             _LOGGER.info("Base station reported state for %d device(s)", updated)
