@@ -25,6 +25,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from pydantic import BaseModel, Field
 
 from eisenberg import (
     EVENT_STREAM_URL,
@@ -95,6 +96,25 @@ SSE_READ_TIMEOUT = 300.0
 # tick so a slow tick can never leave a gap, but not so eagerly that the
 # registration startup just made is immediately redone (issue #27).
 BASE_STATION_RENEW_INTERVAL = timedelta(minutes=25).total_seconds()
+
+
+class DoorbellPress(BaseModel):
+    """The button half of a doorbell's state frame.
+
+    A video doorbell reports a press as `{"buttonPressed": true}` in the same
+    `doorbells/<id>/is` / `cameras/<id>/is` block that carries motion and
+    activity. Arlo never sends a matching release, so the press is an event,
+    not a state: it is counted here and must never be merged into
+    DeviceState, where it would stay `true` forever. pyaarlo reads the same
+    key (doorbell.py, BUTTON_PRESSED_KEY) and resets it on a timer.
+
+    Lives in the integration rather than in `eisenberg.models` so it works
+    against the published pyeisenberg the manifest pins.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    button_pressed: bool | None = Field(None, alias="buttonPressed")
 
 
 def resolve_location_for_device(
@@ -198,6 +218,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # possible from the cloud in that state).
         self.image_bytes: dict[str, bytes] = {}
         self.motion_events: dict[str, MotionEvent] = {}  # device_id -> last event
+        # device_id -> number of doorbell presses seen this session. A counter,
+        # not a flag: entities compare it with the last value they acted on, so
+        # a press fires exactly once however many unrelated broadcasts follow,
+        # and two quick presses are two events.
+        self.doorbell_presses: dict[str, int] = {}
         # gateway_id -> last connectionState ("available" / "unavailable" / ...)
         self.basestation_connection: dict[str, str] = {}
         # When we last registered with the base stations (monotonic seconds).
@@ -221,6 +246,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def contact_sensors(self) -> list[DeviceInfo]:
         """All-in-one sensors (MS1001): a contact sensor and a battery each."""
         return [d for d in self._devices if d.is_sensor]
+
+    @property
+    def doorbells(self) -> list[DeviceInfo]:
+        """Video doorbells: cameras that also get a button press entity."""
+        return [d for d in self.cameras if d.is_doorbell]
 
     def _mqtt_extra_topics(self) -> list[str]:
         """Union of every device's declared allowedMqttTopics, order-stable.
@@ -1101,6 +1131,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # hub-backed accounts that reply is the only source there is
             # (issue #24).
             self._merge_device_state(device_id, state)
+            if DoorbellPress.model_validate(properties).button_pressed:
+                self.doorbell_presses[device_id] = self.doorbell_presses.get(device_id, 0) + 1
+                _LOGGER.info("Doorbell %s pressed", device_id)
             _LOGGER.debug(
                 "Camera %s state: motion=%s activity=%s raw=%s",
                 device_id,

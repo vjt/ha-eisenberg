@@ -4,6 +4,8 @@ Motion detected: from MQTT motionDetected property (resets via MQTT).
 Person/Vehicle/Animal: from AI classification in feed/live events
 (auto-resets after configurable timeout since MQTT only resets generic motion).
 Contact: an all-in-one sensor's (MS1001) contactState, on when open.
+Doorbell pressed: a video doorbell's buttonPressed (auto-resets, since Arlo
+never reports the release).
 """
 
 from __future__ import annotations
@@ -22,7 +24,11 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from eisenberg import DeviceInfo
 
-from .const import CONF_DETECTION_TIMEOUT, DEFAULT_DETECTION_TIMEOUT
+from .const import (
+    CONF_DETECTION_TIMEOUT,
+    DEFAULT_DETECTION_TIMEOUT,
+    DOORBELL_PRESS_RESET_SECONDS,
+)
 from .coordinator import EisenbergCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,8 +47,8 @@ async def async_setup_entry(
 def build_binary_sensors(
     coordinator: EisenbergCoordinator, entry: ConfigEntry
 ) -> list[BinarySensorEntity]:
-    """Motion, AI detection and connectivity per camera; a contact sensor per
-    all-in-one sensor (MS1001)."""
+    """Motion, AI detection and connectivity per camera; a button press
+    sensor per video doorbell; a contact sensor per all-in-one sensor (MS1001)."""
     entities: list[BinarySensorEntity] = []
     for device in coordinator.cameras:
         entities.append(MotionSensor(coordinator, device))
@@ -50,6 +56,7 @@ def build_binary_sensors(
         entities.append(DetectionSensor(coordinator, device, "Vehicle", entry))
         entities.append(DetectionSensor(coordinator, device, "Animal", entry))
         entities.append(BasestationConnectivity(coordinator, device))
+    entities.extend(DoorbellPressSensor(coordinator, d) for d in coordinator.doorbells)
     entities.extend(ContactSensor(coordinator, d) for d in coordinator.contact_sensors)
     return entities
 
@@ -153,6 +160,59 @@ class DetectionSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntit
 
         async def _reset() -> None:
             await asyncio.sleep(timeout)
+            self._attr_is_on = False
+            self.async_write_ha_state()
+
+        self._reset_task = self.hass.async_create_task(_reset())
+
+
+class DoorbellPressSensor(CoordinatorEntity[EisenbergCoordinator], BinarySensorEntity):
+    """On for a few seconds after a video doorbell's button is pressed.
+
+    Arlo sends `buttonPressed: true` and nothing when the button is let go,
+    so the sensor resets itself after DOORBELL_PRESS_RESET_SECONDS. Like
+    DetectionSensor it acts once per press: the coordinator counts presses
+    and the sensor remembers the last count it saw, so the broadcasts every
+    other device triggers cannot re-fire it.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Doorbell pressed"
+    _attr_icon = "mdi:doorbell"
+    _attr_is_on: bool | None = False
+
+    def __init__(
+        self,
+        coordinator: EisenbergCoordinator,
+        device: DeviceInfo,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._reset_task: asyncio.Task[None] | None = None
+        # Presses before this entity existed are history, not a ring.
+        self._last_seen_presses = coordinator.doorbell_presses.get(device.device_id, 0)
+        self._attr_unique_id = f"{device.device_id}_doorbell_pressed"
+        self._attr_device_info = {
+            "identifiers": {("eisenberg", device.device_id)},
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        presses = self.coordinator.doorbell_presses.get(self._device.device_id, 0)
+        if presses == self._last_seen_presses:
+            return
+        self._last_seen_presses = presses
+        self._attr_is_on = True
+        self._schedule_reset()
+        self.async_write_ha_state()
+
+    def _schedule_reset(self) -> None:
+        """Turn off after the reset delay; a new press restarts the delay."""
+        if self._reset_task:
+            self._reset_task.cancel()
+
+        async def _reset() -> None:
+            await asyncio.sleep(DOORBELL_PRESS_RESET_SECONDS)
             self._attr_is_on = False
             self.async_write_ha_state()
 
