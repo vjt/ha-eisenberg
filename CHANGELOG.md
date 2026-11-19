@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event entity *Doorbell* (device class `doorbell`, event type `ring`) and a
   binary sensor *Doorbell pressed* that turns off again after 10 seconds,
   since Arlo never reports the release.
+  Contributed by @yannick80 (#44).
+
+### Changed
+
+- **New integration icon:** a crop of the repository's cover image (the skater
+  on the rail) instead of the old aperture-and-hub drawing, so the integration
+  looks the same in Home Assistant as on GitHub.
 
 ## 0.8.1 — 2026-11-17
 
