@@ -25,7 +25,6 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from pydantic import BaseModel, Field
 
 from eisenberg import (
     EVENT_STREAM_URL,
@@ -45,6 +44,7 @@ from eisenberg.models import (
     ArloMode,
     BasestationState,
     DeviceState,
+    DoorbellPress,
     LastImageSnapshotAvailable,
     LocationInfo,
     LocationState,
@@ -96,25 +96,6 @@ SSE_READ_TIMEOUT = 300.0
 # tick so a slow tick can never leave a gap, but not so eagerly that the
 # registration startup just made is immediately redone (issue #27).
 BASE_STATION_RENEW_INTERVAL = timedelta(minutes=25).total_seconds()
-
-
-class DoorbellPress(BaseModel):
-    """The button half of a doorbell's state frame.
-
-    A video doorbell reports a press as `{"buttonPressed": true}` in the same
-    `doorbells/<id>/is` / `cameras/<id>/is` block that carries motion and
-    activity. Arlo never sends a matching release, so the press is an event,
-    not a state: it is counted here and must never be merged into
-    DeviceState, where it would stay `true` forever. pyaarlo reads the same
-    key (doorbell.py, BUTTON_PRESSED_KEY) and resets it on a timer.
-
-    Lives in the integration rather than in `eisenberg.models` so it works
-    against the published pyeisenberg the manifest pins.
-    """
-
-    model_config = {"populate_by_name": True}
-
-    button_pressed: bool | None = Field(None, alias="buttonPressed")
 
 
 def resolve_location_for_device(

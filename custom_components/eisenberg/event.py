@@ -36,6 +36,7 @@ class DoorbellEvent(CoordinatorEntity[EisenbergCoordinator], EventEntity):
     _attr_has_entity_name = True
     _attr_name = "Doorbell"
     _attr_device_class = EventDeviceClass.DOORBELL
+
     def __init__(
         self,
         coordinator: EisenbergCoordinator,
