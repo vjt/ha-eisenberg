@@ -152,6 +152,22 @@ class DeviceState(BaseModel):
     contact_state: bool | None = Field(None, alias="contactState")
 
 
+class DoorbellPress(BaseModel):
+    """The button half of a doorbell's state frame.
+
+    A video doorbell reports a press as `{"buttonPressed": true}` in the same
+    `doorbells/<id>/is` / `cameras/<id>/is` block that carries motion and
+    activity. Arlo never sends a matching release, so the press is an event,
+    not a state: it is counted by the integration and must never be merged
+    into DeviceState, where it would stay `true` forever. pyaarlo reads the
+    same key (doorbell.py, BUTTON_PRESSED_KEY) and resets it on a timer.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    button_pressed: bool | None = Field(None, alias="buttonPressed")
+
+
 class MediaMeta(BaseModel):
     """Video metadata from a motion recording."""
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **Doorbell button presses.** A video doorbell reports a press as
+  `buttonPressed: true` in its state frame; it used to be logged and dropped,
+  leaving doorbells with only camera entities. Each doorbell now gets an
+  event entity *Doorbell* (device class `doorbell`, event type `ring`) and a
+  binary sensor *Doorbell pressed* that turns off again after 10 seconds,
+  since Arlo never reports the release.
+
 ## 0.8.1 — 2026-11-17
 
 ### Fixed

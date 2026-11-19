@@ -44,6 +44,7 @@ from eisenberg.models import (
     ArloMode,
     BasestationState,
     DeviceState,
+    DoorbellPress,
     LastImageSnapshotAvailable,
     LocationInfo,
     LocationState,
@@ -198,6 +199,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # possible from the cloud in that state).
         self.image_bytes: dict[str, bytes] = {}
         self.motion_events: dict[str, MotionEvent] = {}  # device_id -> last event
+        # device_id -> number of doorbell presses seen this session. A counter,
+        # not a flag: entities compare it with the last value they acted on, so
+        # a press fires exactly once however many unrelated broadcasts follow,
+        # and two quick presses are two events.
+        self.doorbell_presses: dict[str, int] = {}
         # gateway_id -> last connectionState ("available" / "unavailable" / ...)
         self.basestation_connection: dict[str, str] = {}
         # When we last registered with the base stations (monotonic seconds).
@@ -221,6 +227,11 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def contact_sensors(self) -> list[DeviceInfo]:
         """All-in-one sensors (MS1001): a contact sensor and a battery each."""
         return [d for d in self._devices if d.is_sensor]
+
+    @property
+    def doorbells(self) -> list[DeviceInfo]:
+        """Video doorbells: cameras that also get a button press entity."""
+        return [d for d in self.cameras if d.is_doorbell]
 
     def _mqtt_extra_topics(self) -> list[str]:
         """Union of every device's declared allowedMqttTopics, order-stable.
@@ -1101,6 +1112,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # hub-backed accounts that reply is the only source there is
             # (issue #24).
             self._merge_device_state(device_id, state)
+            if DoorbellPress.model_validate(properties).button_pressed:
+                self.doorbell_presses[device_id] = self.doorbell_presses.get(device_id, 0) + 1
+                _LOGGER.info("Doorbell %s pressed", device_id)
             _LOGGER.debug(
                 "Camera %s state: motion=%s activity=%s raw=%s",
                 device_id,

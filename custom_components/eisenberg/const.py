@@ -18,6 +18,11 @@ CONF_FFMPEG_STREAM = "ffmpeg_stream"
 TRUST_COOKIE_PREFIX = "browser_trust_"
 
 DEFAULT_DETECTION_TIMEOUT = 30
+# Arlo reports a doorbell press but never its release; the "Doorbell pressed"
+# binary sensor turns itself off again after this many seconds.
+DOORBELL_PRESS_RESET_SECONDS = 10
+# Event type fired by the doorbell event entity on every press.
+DOORBELL_EVENT_RING = "ring"
 DEFAULT_MEDIA_RETENTION_DAYS = 14
 # Default off: go2rtc reads Arlo's rtsps natively (in-process, HEVC
 # passthrough, smooth). Opt in only where go2rtc's native RTSP client
