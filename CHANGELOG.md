@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **"Base station … confirmed our event subscription" no longer claims
+  another client's subscription.** Every client's registration is
+  acknowledged on the same topic, and while the official Arlo app is open its
+  own arrives every ~20 seconds; all of them were logged as ours, which made a
+  lapsed registration of ours look alive in debug logs. The line now names
+  the other subscriber (#46).
+
 ## 0.9.1 — 2026-11-20
 
 ### Fixed
