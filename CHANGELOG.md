@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **Snapshots behind a base station were lost most of the time.** A base
+  station publishes to the integration only while it holds its event
+  registration, and the registration lapses within about two minutes; it was
+  renewed only every 25–30 minutes. On a VMB4000 a snapshot request was
+  answered 34 s and 92 s after a renewal and never from 161 s on, so for
+  roughly 28 minutes out of every 30 the button was accepted and no picture
+  came. The registration is now renewed every 60 seconds, as pyaarlo does.
+  Motion, battery and signal never depended on it, which is why nothing else
+  looked broken (#45).
+
 ## 0.9.0 — 2026-11-19
 
 ### Added

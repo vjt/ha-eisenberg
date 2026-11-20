@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,6 +24,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from eisenberg import (
@@ -96,6 +97,13 @@ SSE_READ_TIMEOUT = 300.0
 # tick so a slow tick can never leave a gap, but not so eagerly that the
 # registration startup just made is immediately redone (issue #27).
 BASE_STATION_RENEW_INTERVAL = timedelta(minutes=25).total_seconds()
+
+# ...but the registration itself lapses within about two minutes: a VMB4000
+# answered snapshot requests 34 s and 92 s after a renewal and never from
+# 161 s on (issue #45). So re-register on a timer of its own, every minute,
+# as pyaarlo does (FAST_REFRESH_INTERVAL = 60 → `_ping_bases`). The renew
+# above keeps only the device-state pull.
+BASE_STATION_PING_INTERVAL = timedelta(seconds=60)
 
 
 def resolve_location_for_device(
@@ -902,6 +910,9 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # subscription is live, so the reply has somewhere to land
             # (issue #27). No-op on base-less accounts.
             await self._bring_up_base_stations()
+            # ...and keep the registration alive: it lapses within about
+            # two minutes (issue #45).
+            self._start_base_station_ping()
             # Read the device list once more now that the hub knows about
             # us: on base-stationed accounts the battery and signal values
             # only show up in that payload after registration (issue #27).
@@ -1561,30 +1572,13 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         register with nobody and are untouched by any of this.
         """
         self._last_base_bringup = time.monotonic()
-        changed = False
         for device in self._devices:
             if not device.is_base_station:
                 continue
             base_id = device.device_id
-            try:
-                await self.client.register_event_subscription(base_id)
-            except Exception:
-                _LOGGER.warning(
-                    "Base station %s did not accept our event subscription; "
-                    "it will not report device state",
-                    base_id,
-                    exc_info=True,
-                )
-                if self.basestation_connection.get(base_id) != "unavailable":
-                    self.basestation_connection[base_id] = "unavailable"
-                    changed = True
+            if not await self._register_with_base(base_id):
                 # Nothing will answer, so don't bother asking.
                 continue
-
-            if self.basestation_connection.get(base_id) != "available":
-                self.basestation_connection[base_id] = "available"
-                changed = True
-
             try:
                 await self.client.request_device_states(base_id)
                 _LOGGER.debug("Requested device states from base station %s", base_id)
@@ -1595,8 +1589,67 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     exc_info=True,
                 )
 
-        if changed:
+    def _start_base_station_ping(self) -> None:
+        """Re-register with every base station every minute (issue #45).
+
+        Tied to the config entry, so it stops on unload and also when a
+        setup that fails after this point is retried. No-op on base-less
+        accounts.
+        """
+        if not any(d.is_base_station for d in self._devices):
+            return
+        self.entry.async_on_unload(
+            async_track_time_interval(
+                self.hass,
+                self._ping_base_stations,
+                BASE_STATION_PING_INTERVAL,
+                name="eisenberg base station ping",
+                cancel_on_shutdown=True,
+            )
+        )
+
+    async def _ping_base_stations(self, _now: datetime) -> None:
+        """Renew this session's registration with every base station.
+
+        Registration only: the device-state pull stays on the health tick,
+        since battery and signal change slowly and it is the registration
+        that lapses.
+        """
+        for device in self._devices:
+            if device.is_base_station:
+                await self._register_with_base(device.device_id)
+
+    async def _register_with_base(self, base_id: str) -> bool:
+        """Register this session with one base station; True if it accepted.
+
+        The outcome is the base's connectivity: a reply means the hub is
+        reachable. A refusal warns once, when the base goes unavailable, not
+        on every one-minute ping that follows.
+        """
+        try:
+            await self.client.register_event_subscription(base_id)
+        except Exception:
+            if self.basestation_connection.get(base_id) == "unavailable":
+                _LOGGER.debug(
+                    "Base station %s still refuses our event subscription",
+                    base_id,
+                    exc_info=True,
+                )
+                return False
+            _LOGGER.warning(
+                "Base station %s did not accept our event subscription; "
+                "it will not report device state",
+                base_id,
+                exc_info=True,
+            )
+            self.basestation_connection[base_id] = "unavailable"
             self._push_to_entities()
+            return False
+
+        if self.basestation_connection.get(base_id) != "available":
+            self.basestation_connection[base_id] = "available"
+            self._push_to_entities()
+        return True
 
     async def _handle_device_states(self, topic: str, payload: dict[str, Any]) -> None:
         """Per-device state broadcast — currently we only care about activeMode.
