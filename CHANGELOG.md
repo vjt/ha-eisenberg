@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A second Arlo account lost its security-mode select.** Each Arlo account
+  is its own config entry, but a single-location account's select had the
+  fixed unique ID `eisenberg_security_mode`, so the second account's select
+  was dropped ("Platform eisenberg does not generate unique IDs"). Every
+  select's unique ID is now scoped by its location, and the existing select is
+  migrated in place: same entity ID, history and automations (#43).
+
 ## 0.9.2 — 2026-11-20
 
 ### Fixed
