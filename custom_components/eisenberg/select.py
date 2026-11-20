@@ -1,9 +1,12 @@
 """Select platform for Eisenberg — security mode (Away/Home/Standby + custom modes).
 
 Modes are scoped per location in Arlo's v3 automation API, so we expose one
-security-mode select per location. Single-location accounts (the common case)
-get exactly one select with the original unique_id, so upgrading does not
-orphan the existing entity.
+security-mode select per location, its unique_id scoped by location id.
+
+Single-location accounts used to get the bare `eisenberg_security_mode`, which
+a second Arlo account (a second config entry) then collided with, losing its
+select (#43). That entity is migrated in the registry to the scoped id, so its
+entity_id, history and automations survive the upgrade.
 """
 
 from __future__ import annotations
@@ -13,16 +16,46 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from eisenberg.models import DeviceInfo, LocationState
 
+from .const import DOMAIN
 from .coordinator import EisenbergCoordinator, resolve_location_for_device
 
 _LOGGER = logging.getLogger(__name__)
 
 _LEGACY_UNIQUE_ID = "eisenberg_security_mode"
+
+
+def _unique_id(location_id: str) -> str:
+    return f"{_LEGACY_UNIQUE_ID}_{location_id}"
+
+
+def migrate_legacy_unique_id(
+    registry: er.EntityRegistry, entry_id: str, location_ids: list[str]
+) -> None:
+    """Move this entry's legacy-id select to its location-scoped id (#43).
+
+    Only a single-location entry ever got the legacy id, so that is the only
+    case with a location to move it to. Another entry's legacy entity, or a
+    scoped id already in the registry, is left alone.
+    """
+    if len(location_ids) != 1:
+        return
+    entity_id = registry.async_get_entity_id("select", DOMAIN, _LEGACY_UNIQUE_ID)
+    if entity_id is None:
+        return
+    registered = registry.async_get(entity_id)
+    if registered is None or registered.config_entry_id != entry_id:
+        return
+    scoped = _unique_id(location_ids[0])
+    if registry.async_get_entity_id("select", DOMAIN, scoped) is not None:
+        return
+    registry.async_update_entity(entity_id, new_unique_id=scoped)
+    _LOGGER.info("Migrated %s to unique_id %s", entity_id, scoped)
 
 
 def _representative_device(
@@ -40,7 +73,7 @@ def _representative_device(
 
 
 def build_mode_selects(coordinator: EisenbergCoordinator) -> list[SecurityModeSelect]:
-    """One select per location. Single-location keeps the legacy unique_id."""
+    """One select per location; a single location keeps the plain name."""
     single = len(coordinator.locations) == 1
     return [
         SecurityModeSelect(coordinator, location_id, single=single)
@@ -55,6 +88,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up one security mode select per location."""
     coordinator: EisenbergCoordinator = entry.runtime_data
+    migrate_legacy_unique_id(er.async_get(hass), entry.entry_id, list(coordinator.locations))
     async_add_entities(build_mode_selects(coordinator))
 
 
@@ -68,12 +102,10 @@ class SecurityModeSelect(CoordinatorEntity[EisenbergCoordinator], SelectEntity):
         super().__init__(coordinator)
         self._location_id = location_id
         location = coordinator.locations[location_id]
+        self._attr_unique_id = _unique_id(location_id)
         if single:
-            # Preserve the original entity on upgrade.
-            self._attr_unique_id = _LEGACY_UNIQUE_ID
             self._attr_name = "Security mode"
         else:
-            self._attr_unique_id = f"{_LEGACY_UNIQUE_ID}_{location_id}"
             label = location.location_name or location_id
             self._attr_name = f"Security mode ({label})"
         anchor = _representative_device(coordinator, location)
