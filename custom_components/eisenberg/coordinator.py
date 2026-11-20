@@ -1534,11 +1534,26 @@ class EisenbergCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Arrives after `register_event_subscription`. Beyond confirming the
         registration was honoured, it is the hub speaking to us directly, so
         it doubles as proof the hub is reachable (issue #27).
+
+        Every client's registration is acknowledged on this topic, not just
+        ours: the official app's arrives every ~20 s while it is open. Only
+        `{userId}_web` is ours; logging the others as ours made a lapsed
+        registration look alive (issue #46). Any ack still proves the hub
+        is reachable.
         """
         base_id = payload.get("from")
         if not isinstance(base_id, str):
             return
-        _LOGGER.debug("Base station %s confirmed our event subscription", base_id)
+        resource = payload.get("resource")
+        subscriber = resource.removeprefix("subscriptions/") if isinstance(resource, str) else None
+        if subscriber == f"{self.client.user_id}_web":
+            _LOGGER.debug("Base station %s confirmed our event subscription", base_id)
+        else:
+            _LOGGER.debug(
+                "Base station %s confirmed another client's event subscription (%s)",
+                base_id,
+                subscriber,
+            )
         if self.basestation_connection.get(base_id) != "available":
             self.basestation_connection[base_id] = "available"
             self._push_to_entities()

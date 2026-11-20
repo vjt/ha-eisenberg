@@ -36,6 +36,7 @@ one property block per child. See pyaarlo backend.py `_event_dispatcher`:
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from custom_components.eisenberg.coordinator import EisenbergCoordinator
@@ -353,19 +354,51 @@ class TestInitialSnapshots:
         assert client.snapshots == [CAM_A]
 
 
+def _ack(subscriber: str) -> dict[str, Any]:
+    return {
+        "from": BASE,
+        "to": subscriber,
+        "action": "is",
+        "resource": f"subscriptions/{subscriber}",
+        "properties": {"devices": [BASE]},
+    }
+
+
 class TestSubscriptionAck:
-    async def test_ack_confirms_the_base_is_reachable(self) -> None:
+    @staticmethod
+    def _rec() -> _RecordingCoordinator:
         rec = _RecordingCoordinator()
+        rec.coord.client = SimpleNamespace(user_id="USER")  # type: ignore[assignment]
+        return rec
+
+    async def test_ack_confirms_the_base_is_reachable(self) -> None:
+        rec = self._rec()
         await rec.coord._handle_subscription_ack(
-            f"d/{CLOUD}/out/subscriptions/USER_web/is",
-            {
-                "from": BASE,
-                "to": "USER_web",
-                "action": "is",
-                "resource": "subscriptions/USER_web",
-                "properties": {"devices": [BASE]},
-            },
+            f"d/{CLOUD}/out/subscriptions/USER_web/is", _ack("USER_web")
         )
+        assert rec.coord.basestation_connection[BASE] == "available"
+
+    async def test_our_ack_is_logged_as_ours(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        rec = self._rec()
+        await rec.coord._handle_subscription_ack(
+            f"d/{CLOUD}/out/subscriptions/USER_web/is", _ack("USER_web")
+        )
+        assert "confirmed our event subscription" in caplog.text
+
+    async def test_another_clients_ack_is_not_logged_as_ours(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Issue #46: the official app's own subscription (`and!` transIds,
+        every ~20 s) was logged as ours, so a lapsed registration of ours
+        looked alive. It still proves the hub is reachable."""
+        caplog.set_level(logging.DEBUG)
+        rec = self._rec()
+        await rec.coord._handle_subscription_ack(
+            f"d/{CLOUD}/out/subscriptions/OWNER/is", _ack("OWNER")
+        )
+        assert "confirmed our event subscription" not in caplog.text
+        assert "OWNER" in caplog.text
         assert rec.coord.basestation_connection[BASE] == "available"
 
 
